@@ -1,0 +1,725 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>DJI MSDK Dashboard</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --panel: #161b22;
+      --panel-2: #1f242c;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --ok: #3fb950;
+      --warn: #d29922;
+      --err: #f85149;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
+      grid-template-rows: auto 1fr;
+      gap: 12px;
+      padding: 12px;
+    }
+    header {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 14px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    h1 { margin: 0; font-size: 16px; letter-spacing: 0.3px; }
+    .status { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--err); }
+    .dot.ok { background: var(--ok); }
+    .dot.warn { background: var(--warn); }
+    .video {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 0;
+      position: relative;
+    }
+    .video img {
+      width: 100%; height: 100%;
+      object-fit: contain;
+      image-rendering: -webkit-optimize-contrast;
+    }
+    .video svg.overlay {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+    }
+    .video .placeholder { color: var(--muted); font-size: 14px; }
+    .video .badge {
+      position: absolute; top: 10px; left: 10px;
+      background: rgba(0,0,0,0.55);
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .video .track-overlay {
+      position: absolute; bottom: 0; left: 0; right: 0;
+      background: linear-gradient(to top, rgba(0,0,0,0.7), transparent);
+      padding: 14px 12px 8px;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 12px;
+      color: #d9e1eb;
+      display: none;
+    }
+    .video .track-overlay.on { display: block; }
+    aside {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px;
+      overflow-y: auto;
+    }
+    aside h2 {
+      margin: 0 0 10px 0;
+      font-size: 12px;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    aside h2:not(:first-of-type) { margin-top: 18px; }
+    .tile {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+      margin-bottom: 8px;
+    }
+    .tile .k {
+      font-size: 11px; letter-spacing: 0.6px; color: var(--muted); text-transform: uppercase;
+    }
+    .tile .v {
+      margin-top: 2px; font-size: 17px;
+      font-variant-numeric: tabular-nums;
+    }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .row3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    button.ctrl {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 8px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.1s, border-color 0.1s;
+    }
+    button.ctrl:hover { background: #2a313a; border-color: #444c56; }
+    button.ctrl:active { background: #353c45; }
+    button.ctrl:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.ctrl.danger { color: #ffb4ab; border-color: #66362f; }
+    button.ctrl.danger:hover { background: #3f211d; }
+    button.ctrl.go { color: #b3e6c0; border-color: #2e5e3a; }
+    button.ctrl.go:hover { background: #1e3a25; }
+    button.ctrl.active { background: var(--accent); color: #0a1622; border-color: var(--accent); }
+    .toggle-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 0;
+    }
+    .toggle-row label { font-size: 13px; color: var(--text); }
+    .slider {
+      margin-top: 8px;
+    }
+    .slider .lbl {
+      display: flex; justify-content: space-between;
+      font-size: 11px; color: var(--muted); margin-bottom: 4px;
+      letter-spacing: 0.5px; text-transform: uppercase;
+    }
+    .slider input[type=range] {
+      width: 100%; accent-color: var(--accent);
+    }
+    .battery { display: flex; align-items: center; gap: 8px; }
+    .bar { flex: 1; height: 6px; background: #21262d; border-radius: 3px; overflow: hidden; }
+    .bar > div { height: 100%; background: var(--ok); width: 0%; transition: width 0.3s ease; }
+    .bar.low > div  { background: var(--warn); }
+    .bar.crit > div { background: var(--err);  }
+    .small { font-size: 12px; color: var(--muted); }
+    .tag {
+      display: inline-block; padding: 2px 8px; border-radius: 10px;
+      font-size: 11px; letter-spacing: 0.6px; text-transform: uppercase;
+      border: 1px solid var(--border); color: var(--muted);
+    }
+    .tag.on  { background: rgba(63,185,80,0.15); color: var(--ok);   border-color: #214f2c; }
+    .tag.off { color: var(--muted); }
+    .tag.warn { background: rgba(210,153,34,0.15); color: var(--warn); border-color: #5a4419; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>DJI MSDK · LAN Dashboard</h1>
+    <div class="status">
+      <span class="dot" id="dot"></span>
+      <span id="state">connecting…</span>
+      <span class="small" id="fps"></span>
+    </div>
+  </header>
+
+  <div class="video">
+    <span class="badge" id="badge">no signal</span>
+    <span class="placeholder" id="placeholder">Waiting for camera frame…</span>
+    <img id="img" style="display:none" alt="" />
+
+    <!-- SVG overlay: viewBox set from telemetry.frameWidth/Height so all
+         drawing is in original frame pixel coords and scales with the img. -->
+    <svg id="overlay" class="overlay" viewBox="0 0 1920 1080"
+         preserveAspectRatio="xMidYMid meet">
+      <!-- Layers populated by JS: crosshair, deadzone, marker, offset arrow, roll bar -->
+      <g id="ov-crosshair"></g>
+      <g id="ov-deadzone"></g>
+      <g id="ov-marker"></g>
+      <g id="ov-offset"></g>
+      <g id="ov-rollbar"></g>
+    </svg>
+
+    <div class="track-overlay" id="trackOverlay">
+      <span id="trackLine">searching…</span>
+    </div>
+  </div>
+
+  <aside>
+    <h2>Safety · Obstacle Avoidance</h2>
+
+    <div class="toggle-row">
+      <label>Avoidance type</label>
+      <button class="ctrl" id="btn-oa-type" data-type="UNKNOWN">—</button>
+    </div>
+
+    <div class="row3">
+      <button class="ctrl" id="btn-oa-h" data-on="false">H: off</button>
+      <button class="ctrl" id="btn-oa-u" data-on="false">U: off</button>
+      <button class="ctrl" id="btn-oa-d" data-on="false">D: off</button>
+    </div>
+
+    <div class="row3" style="margin-top:8px">
+      <div class="tile">
+        <div class="k">Horizontal</div>
+        <div class="v" id="oa-dist-h">— mm</div>
+      </div>
+      <div class="tile">
+        <div class="k">Upward</div>
+        <div class="v" id="oa-dist-u">— mm</div>
+      </div>
+      <div class="tile">
+        <div class="k">Downward</div>
+        <div class="v" id="oa-dist-d">— mm</div>
+      </div>
+    </div>
+
+    <div class="tile" style="margin-top:8px">
+      <div class="k">Sensors working</div>
+      <div class="v" id="oa-working" style="font-size:13px">—</div>
+    </div>
+
+    <h2>ArUco Tracking</h2>
+
+    <div class="toggle-row">
+      <label>ArUco mode</label>
+      <button class="ctrl" id="btn-aruco" data-on="false">OFF</button>
+    </div>
+
+    <div class="toggle-row">
+      <label>Auto-land when centered</label>
+      <button class="ctrl" id="btn-autoland" data-on="false">OFF</button>
+    </div>
+
+    <div class="row">
+      <div class="tile">
+        <div class="k">Virtual Stick</div>
+        <div class="v" id="vs-state">—</div>
+      </div>
+      <div class="tile">
+        <div class="k">Tracking</div>
+        <div class="v" id="track-state">—</div>
+      </div>
+    </div>
+
+    <div class="tile">
+      <div class="k">Status</div>
+      <div class="v" id="track-status">—</div>
+    </div>
+
+    <div class="row3">
+      <button class="ctrl" id="btn-takeoff">Takeoff</button>
+      <button class="ctrl danger" id="btn-land">Land</button>
+      <button class="ctrl" id="btn-vs-on">Enable VS</button>
+    </div>
+    <div class="row3" style="margin-top:8px">
+      <button class="ctrl" id="btn-vs-off">Disable VS</button>
+      <button class="ctrl go" id="btn-track-on">Start Track</button>
+      <button class="ctrl danger" id="btn-track-off">Stop Track</button>
+    </div>
+
+    <div class="slider">
+      <div class="lbl"><span>P-Gain</span><span id="pgain-val">0.15</span></div>
+      <input type="range" id="pgain" min="5" max="50" value="15" />
+    </div>
+    <div class="slider">
+      <div class="lbl"><span>D-Gain</span><span id="dgain-val">0.10</span></div>
+      <input type="range" id="dgain" min="0" max="30" value="10" />
+    </div>
+
+    <h2>Telemetry</h2>
+
+    <div class="tile">
+      <div class="k">Battery</div>
+      <div class="v battery">
+        <span id="battery-pct">—</span>
+        <div class="bar" id="battery-bar"><div></div></div>
+      </div>
+    </div>
+
+    <div class="tile">
+      <div class="k">Motors</div>
+      <div class="v" id="motors">—</div>
+    </div>
+
+    <div class="tile">
+      <div class="k">Altitude</div>
+      <div class="v"><span id="alt">—</span> <span class="small">m</span></div>
+    </div>
+
+    <div class="row">
+      <div class="tile">
+        <div class="k">Latitude</div>
+        <div class="v" id="lat">—</div>
+      </div>
+      <div class="tile">
+        <div class="k">Longitude</div>
+        <div class="v" id="lng">—</div>
+      </div>
+    </div>
+
+    <div class="tile">
+      <div class="k">Velocity (x · y · z)</div>
+      <div class="v" id="vel">— · — · —</div>
+    </div>
+
+    <div class="small" id="lastSeen">no data yet</div>
+  </aside>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const wsUrl = (location.protocol === "https:" ? "wss://" : "ws://")
+                + location.host + "/ws";
+
+  let ws = null;
+  let frameUrl = null;
+  let frameCount = 0;
+  let lastFpsTime = performance.now();
+  let arucoOn = false;
+  let autoLandOn = false;
+
+  function setState(text, cls) {
+    $("state").textContent = text;
+    $("dot").className = "dot " + (cls || "");
+    setControlsEnabled(cls === "ok");
+  }
+
+  function setControlsEnabled(on) {
+    const ids = ["btn-aruco","btn-autoland","btn-takeoff","btn-land","btn-vs-on","btn-vs-off",
+                 "btn-track-on","btn-track-off","pgain","dgain",
+                 "btn-oa-type","btn-oa-h","btn-oa-u","btn-oa-d"];
+    ids.forEach(id => $(id).disabled = !on);
+  }
+
+  function connect() {
+    setState("connecting…", "warn");
+    ws = new WebSocket(wsUrl);
+    ws.binaryType = "blob";
+
+    ws.onopen = () => setState("connected", "ok");
+    ws.onmessage = (ev) => {
+      if (typeof ev.data === "string") {
+        try { applyTelemetry(JSON.parse(ev.data)); }
+        catch (e) { console.warn("bad telemetry json", e); }
+      } else {
+        renderFrame(ev.data);
+      }
+    };
+    ws.onclose = () => {
+      setState("disconnected · retrying", "");
+      setTimeout(connect, 1500);
+    };
+    ws.onerror = () => { try { ws.close(); } catch (_) {} };
+  }
+
+  function send(cmd, extra) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const obj = Object.assign({ cmd }, extra || {});
+    ws.send(JSON.stringify(obj));
+  }
+
+  function renderFrame(blob) {
+    const url = URL.createObjectURL(blob);
+    const img = $("img");
+    img.onload = () => {
+      if (frameUrl) URL.revokeObjectURL(frameUrl);
+      frameUrl = url;
+      img.style.display = "block";
+      $("placeholder").style.display = "none";
+      $("badge").textContent = arucoOn ? "LIVE · ARUCO" : "LIVE";
+    };
+    img.onerror = () => URL.revokeObjectURL(url);
+    img.src = url;
+
+    frameCount++;
+    const now = performance.now();
+    if (now - lastFpsTime >= 1000) {
+      const fps = (frameCount * 1000 / (now - lastFpsTime)).toFixed(0);
+      $("fps").textContent = "· " + fps + " fps";
+      frameCount = 0;
+      lastFpsTime = now;
+    }
+  }
+
+  function fmt(n, digits) {
+    if (n === undefined || n === null || Number.isNaN(n)) return "—";
+    return Number(n).toFixed(digits);
+  }
+
+  function applyTelemetry(t) {
+    $("alt").textContent = fmt(t.altitude, 1);
+    $("lat").textContent = fmt(t.latitude, 6);
+    $("lng").textContent = fmt(t.longitude, 6);
+    const v = t.velocity || {};
+    $("vel").textContent =
+      `${fmt(v.x, 2)} · ${fmt(v.y, 2)} · ${fmt(v.z, 2)} m/s`;
+    $("motors").textContent = t.motorsOn ? "ON" : "off";
+
+    const pct = (t.battery == null) ? 0 : t.battery;
+    $("battery-pct").textContent = (t.battery == null) ? "—" : pct + "%";
+    const bar = $("battery-bar");
+    bar.firstElementChild.style.width = Math.max(0, Math.min(100, pct)) + "%";
+    bar.classList.toggle("low",  pct > 15 && pct <= 30);
+    bar.classList.toggle("crit", pct <= 15);
+
+    if (t.tracking) applyTracking(t.tracking);
+    if (t.safety) applySafety(t.safety);
+    applyOverlay(t);
+
+    const d = new Date(t.ts || Date.now());
+    $("lastSeen").textContent = "updated " + d.toLocaleTimeString();
+  }
+
+  // ----- SVG overlay renderer -----------------------------------------
+  // Everything is drawn in frame-pixel coordinates; the SVG viewBox is
+  // updated from the latest known frame dimensions so the same coordinates
+  // line up with the <img> regardless of the browser's render size.
+
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  function svg(tag, attrs) {
+    const el = document.createElementNS(SVG_NS, tag);
+    for (const k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+  function clear(id) { const g = $(id); while (g.firstChild) g.removeChild(g.firstChild); }
+
+  function applyOverlay(t) {
+    const w = t.frameWidth | 0;
+    const h = t.frameHeight | 0;
+    if (w <= 0 || h <= 0) return;
+    const ov = $("overlay");
+    if (ov.getAttribute("viewBox") !== `0 0 ${w} ${h}`) {
+      ov.setAttribute("viewBox", `0 0 ${w} ${h}`);
+    }
+    drawCrosshair(w, h);
+    const tr = t.tracking || {};
+    drawDeadzone(w, h, tr);
+    drawMarker(w, h, tr);
+    drawOffset(w, h, tr);
+    drawRollBar(w, h, tr);
+  }
+
+  function drawCrosshair(w, h) {
+    clear("ov-crosshair");
+    const g = $("ov-crosshair");
+    const cx = w / 2, cy = h / 2;
+    const arm = Math.min(w, h) * 0.02;  // ~2% of short side
+    const style = { stroke: "#ffe066", "stroke-width": Math.max(2, w * 0.0015), fill: "none", opacity: 0.85 };
+    g.appendChild(svg("line", Object.assign({ x1: cx - arm, y1: cy, x2: cx + arm, y2: cy }, style)));
+    g.appendChild(svg("line", Object.assign({ x1: cx, y1: cy - arm, x2: cx, y2: cy + arm }, style)));
+    g.appendChild(svg("circle", Object.assign({ cx, cy, r: Math.max(2, w * 0.002) }, style, { fill: "#ffe066" })));
+  }
+
+  function drawDeadzone(w, h, tr) {
+    clear("ov-deadzone");
+    if (!tr.arucoMode) return;
+    const dz = (tr.deadZone == null) ? 0.05 : tr.deadZone;
+    // offsetX = (cx - w/2)/(w/2); abs(offsetX) < deadZone <=>
+    // cx in [w/2 - deadZone*w/2, w/2 + deadZone*w/2]
+    const left = w/2 - dz * w/2;
+    const right = w/2 + dz * w/2;
+    const g = $("ov-deadzone");
+    const inDead = tr.detected && Math.abs(tr.offsetX || 0) < dz;
+    const colour = inDead ? "#3fb950" : "#58a6ff";
+    const sw = Math.max(1.5, w * 0.001);
+    g.appendChild(svg("line", { x1: left, y1: 0, x2: left, y2: h, stroke: colour, "stroke-width": sw, "stroke-dasharray": `${w*0.012},${w*0.008}`, opacity: 0.55 }));
+    g.appendChild(svg("line", { x1: right, y1: 0, x2: right, y2: h, stroke: colour, "stroke-width": sw, "stroke-dasharray": `${w*0.012},${w*0.008}`, opacity: 0.55 }));
+    // Small "DZ" label
+    g.appendChild(svg("text", {
+      x: left + (right-left)/2, y: h * 0.05, fill: colour, "text-anchor": "middle",
+      "font-size": Math.max(14, w * 0.014), "font-family": "ui-monospace,monospace", opacity: 0.7,
+    })).textContent = "DZ";
+  }
+
+  function drawMarker(w, h, tr) {
+    clear("ov-marker");
+    if (!tr.arucoMode || !tr.detected) return;
+    const pts = tr.markerCorners;
+    if (!Array.isArray(pts) || pts.length !== 4) return;
+    const g = $("ov-marker");
+    const sw = Math.max(2, w * 0.002);
+    const colour = tr.isCentered ? "#3fb950" : "#ff8c4d";
+    const pointsAttr = pts.map(p => `${p[0]},${p[1]}`).join(" ");
+    g.appendChild(svg("polygon", {
+      points: pointsAttr,
+      fill: "none", stroke: colour, "stroke-width": sw, "stroke-linejoin": "round",
+    }));
+    // Center dot of the marker
+    const mcx = (pts[0][0] + pts[1][0] + pts[2][0] + pts[3][0]) / 4;
+    const mcy = (pts[0][1] + pts[1][1] + pts[2][1] + pts[3][1]) / 4;
+    g.appendChild(svg("circle", { cx: mcx, cy: mcy, r: Math.max(3, w * 0.0035), fill: colour }));
+  }
+
+  function drawOffset(w, h, tr) {
+    clear("ov-offset");
+    if (!tr.arucoMode || !tr.detected) return;
+    const pts = tr.markerCorners;
+    if (!Array.isArray(pts) || pts.length !== 4) return;
+    const mcx = (pts[0][0] + pts[1][0] + pts[2][0] + pts[3][0]) / 4;
+    const mcy = (pts[0][1] + pts[1][1] + pts[2][1] + pts[3][1]) / 4;
+    const cx = w / 2, cy = h / 2;
+    const g = $("ov-offset");
+    // Colour-code by offset magnitude
+    const mag = Math.abs(tr.offsetX || 0);
+    const colour = mag < 0.05 ? "#3fb950" : (mag < 0.20 ? "#ffe066" : "#f85149");
+    const sw = Math.max(2, w * 0.0025);
+    g.appendChild(svg("line", { x1: cx, y1: cy, x2: mcx, y2: mcy, stroke: colour, "stroke-width": sw, opacity: 0.85 }));
+  }
+
+  function drawRollBar(w, h, tr) {
+    clear("ov-rollbar");
+    if (!tr.arucoMode || !tr.isTracking || !tr.detected) return;
+    const g = $("ov-rollbar");
+    // Bar across the bottom: track from 5% to 95% of width, centred at 50%.
+    const barY = h * 0.93;
+    const barH = Math.max(8, h * 0.015);
+    const left = w * 0.20, right = w * 0.80, mid = w * 0.50;
+    g.appendChild(svg("rect", {
+      x: left, y: barY - barH/2, width: right - left, height: barH,
+      fill: "rgba(255,255,255,0.08)", rx: barH / 2,
+    }));
+    // Centerline
+    g.appendChild(svg("line", {
+      x1: mid, y1: barY - barH, x2: mid, y2: barY + barH,
+      stroke: "rgba(255,255,255,0.5)", "stroke-width": Math.max(1, w * 0.0008),
+    }));
+    // Actual fill: roll percent maps to half-bar width
+    const pct = Math.max(-100, Math.min(100, tr.rollPercent || 0));
+    const halfW = (right - left) / 2;
+    const fillW = (Math.abs(pct) / 100) * halfW;
+    const fillX = pct >= 0 ? mid : mid - fillW;
+    const fillColour = tr.kicking ? "#ffe066" : (pct >= 0 ? "#3fb950" : "#f85149");
+    g.appendChild(svg("rect", {
+      x: fillX, y: barY - barH/2, width: fillW, height: barH,
+      fill: fillColour, rx: barH / 2, opacity: 0.85,
+    }));
+  }
+
+  function applySafety(s) {
+    const typeBtn = $("btn-oa-type");
+    typeBtn.textContent = s.oaType || "UNKNOWN";
+    typeBtn.dataset.type = s.oaType || "UNKNOWN";
+    typeBtn.classList.toggle("active", s.oaType === "BRAKE" || s.oaType === "BYPASS");
+
+    function setToggle(id, on, label) {
+      const b = $(id);
+      b.textContent = `${label}: ${on ? "ON" : "off"}`;
+      b.dataset.on = on ? "true" : "false";
+      b.classList.toggle("active", !!on);
+    }
+    const e = s.enabled || {};
+    setToggle("btn-oa-h", e.horizontal, "H");
+    setToggle("btn-oa-u", e.upward,     "U");
+    setToggle("btn-oa-d", e.downward,   "D");
+
+    function distLabel(v) {
+      if (v == null) return "— mm";
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) return "—";
+      // MSDK obstacleDistance is already millimetres — just relabel.
+      return Math.round(n) + " mm";
+    }
+    const dist = s.distance || {};
+    $("oa-dist-h").textContent = distLabel(dist.horizontal);
+    $("oa-dist-u").textContent = distLabel(dist.upward);
+    $("oa-dist-d").textContent = distLabel(dist.downward);
+
+    // Compact "F B L R D" indicators — green/dot when sensors are reporting
+    const w = s.working || {};
+    function tag(name, on) {
+      return `<span class="tag ${on ? "on" : "off"}" style="margin-right:4px">${name}</span>`;
+    }
+    $("oa-working").innerHTML =
+      tag("F", w.forward) + tag("B", w.backward) + tag("L", w.left) +
+      tag("R", w.right) + tag("D", w.down);
+  }
+
+  function applyTracking(tr) {
+    // Keep toggles in sync with server-side state (handles reconnect + multi-client)
+    if (tr.arucoMode !== arucoOn) {
+      arucoOn = tr.arucoMode;
+      const b = $("btn-aruco");
+      b.textContent = arucoOn ? "ON" : "OFF";
+      b.classList.toggle("active", arucoOn);
+      b.dataset.on = arucoOn ? "true" : "false";
+      $("trackOverlay").classList.toggle("on", arucoOn);
+    }
+    if (tr.autoLand !== autoLandOn) {
+      autoLandOn = tr.autoLand;
+      const b = $("btn-autoland");
+      b.textContent = autoLandOn ? "ARMED" : "OFF";
+      b.classList.toggle("active", autoLandOn);
+      b.classList.toggle("danger", autoLandOn);
+    }
+
+    // VS state tile
+    const vsEl = $("vs-state");
+    vsEl.innerHTML = tr.vsEnabled
+      ? '<span class="tag on">ENABLED</span>'
+      : '<span class="tag off">disabled</span>';
+
+    // Tracking state tile
+    const trkEl = $("track-state");
+    trkEl.innerHTML = tr.isTracking
+      ? '<span class="tag on">TRACKING</span>'
+      : '<span class="tag off">idle</span>';
+
+    let line = "";
+    let statusText = "";
+    if (!tr.arucoMode) {
+      statusText = "ArUco off";
+    } else if (!tr.isTracking) {
+      statusText = "Idle (mode on, not tracking)";
+      line = "marker " + (tr.detected ? "visible" : "—");
+    } else if (tr.isCentered && tr.autoLand) {
+      const secs = ((tr.centerHoldMs || 0) / 1000).toFixed(1);
+      statusText = `CENTERED ${secs}s / 3.0s — landing imminent`;
+      line = `offset=${fmt(tr.offsetX,2)}  size=${fmt(tr.markerSize,0)}px`;
+    } else if (tr.isCentered) {
+      statusText = "CENTERED · holding (auto-land off)";
+      line = `offset=${fmt(tr.offsetX,2)}  size=${fmt(tr.markerSize,0)}px`;
+    } else if (tr.detected) {
+      const kickTag = tr.kicking ? " · KICK" : "";
+      statusText = `TRACKING · ${fmt(tr.rollDeg, 1)}° roll${kickTag}`;
+      line = `offset=${fmt(tr.offsetX,2)}  size=${fmt(tr.markerSize,0)}px  roll=${fmt(tr.rollDeg,2)}°  P=${fmt(tr.pGain,2)} D=${fmt(tr.dGain,2)}`;
+    } else {
+      statusText = "SEARCHING for marker 0";
+      line = "no marker · hovering";
+    }
+
+    // Loud warning if the user is trying to track without VS — this is the
+    // failure mode that motivated all these indicators in the first place.
+    if (tr.isTracking && !tr.vsEnabled) {
+      statusText = "⚠ TRACKING but Virtual Stick is OFF — drone won't move";
+    }
+
+    $("track-status").textContent = statusText;
+    $("trackLine").textContent = line;
+
+    // Keep sliders in sync if the server pushes new gains
+    syncSlider("pgain", tr.pGain, 100);
+    syncSlider("dgain", tr.dGain, 100);
+  }
+
+  function syncSlider(id, value, scale) {
+    if (value == null) return;
+    const el = $(id);
+    if (document.activeElement === el) return; // don't fight the user
+    const scaled = Math.round(value * scale);
+    if (Number(el.value) !== scaled) {
+      el.value = scaled;
+      $(id + "-val").textContent = (scaled / scale).toFixed(2);
+    }
+  }
+
+  // --- Wire up controls ---
+  // OA controls
+  const oaTypeCycle = { "CLOSE": "BRAKE", "BRAKE": "BYPASS", "BYPASS": "CLOSE", "UNKNOWN": "BRAKE" };
+  $("btn-oa-type").onclick = () => {
+    const cur = $("btn-oa-type").dataset.type || "UNKNOWN";
+    const next = oaTypeCycle[cur] || "BRAKE";
+    send("setOaType", { type: next });
+  };
+  $("btn-oa-h").onclick = () => {
+    const on = $("btn-oa-h").dataset.on !== "true";
+    send("setOaEnabled", { direction: "HORIZONTAL", on });
+  };
+  $("btn-oa-u").onclick = () => {
+    const on = $("btn-oa-u").dataset.on !== "true";
+    send("setOaEnabled", { direction: "UPWARD", on });
+  };
+  $("btn-oa-d").onclick = () => {
+    const on = $("btn-oa-d").dataset.on !== "true";
+    send("setOaEnabled", { direction: "DOWNWARD", on });
+  };
+
+  $("btn-aruco").onclick = () => {
+    const next = !arucoOn;
+    send("setArucoMode", { on: next });
+  };
+  $("btn-autoland").onclick = () => {
+    const next = !autoLandOn;
+    if (next && !confirm("Arm auto-land? Drone will disable VS and land after 3 s of being centered.")) return;
+    send("setAutoLand", { on: next });
+  };
+  $("btn-takeoff").onclick = () => {
+    if (confirm("Takeoff? Make sure the area is clear.")) send("takeoff");
+  };
+  $("btn-land").onclick    = () => send("land");
+  $("btn-vs-on").onclick   = () => {
+    if (confirm("Enable Virtual Stick? This hands flight control to MSDK.")) send("enableVS");
+  };
+  $("btn-vs-off").onclick  = () => send("disableVS");
+  $("btn-track-on").onclick  = () => send("startTrack");
+  $("btn-track-off").onclick = () => send("stopTrack");
+
+  $("pgain").oninput = (e) => {
+    const v = e.target.value / 100;
+    $("pgain-val").textContent = v.toFixed(2);
+    send("setGain", { pGain: v });
+  };
+  $("dgain").oninput = (e) => {
+    const v = e.target.value / 100;
+    $("dgain-val").textContent = v.toFixed(2);
+    send("setGain", { dGain: v });
+  };
+
+  connect();
+})();
+</script>
+</body>
+</html>

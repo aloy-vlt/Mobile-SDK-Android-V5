@@ -83,6 +83,10 @@ ext {
     //sample 扩展EditText
     deps.expandedit = "com.github.thomhurst:ExpandableHintText:1.0.7"
 
+    //embedded HTTP+WebSocket server for LAN dashboard
+    deps.nanoHttpd = 'org.nanohttpd:nanohttpd:2.3.1'
+    deps.nanoHttpdWs = 'org.nanohttpd:nanohttpd-websocket:2.3.1'
+
     //测试
     deps.junit4 = "junit:junit:4.12"
     deps.jnitCore = 'androidx.test:core:1.5.0'

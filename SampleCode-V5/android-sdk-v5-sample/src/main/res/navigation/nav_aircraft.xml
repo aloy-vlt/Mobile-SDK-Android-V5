@@ -232,4 +232,9 @@
         android:name="dji.sampleV5.aircraft.pages.ArucoFollowFragment"
         android:label="aruco_follow_page"
         tools:layout="@layout/frag_aruco_follow" />
+    <fragment
+        android:id="@+id/dashboard_server_page"
+        android:name="dji.sampleV5.aircraft.pages.DashboardServerFragment"
+        android:label="dashboard_server_page"
+        tools:layout="@layout/frag_dashboard_server" />
 </navigation>

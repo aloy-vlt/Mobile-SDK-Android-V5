@@ -497,4 +497,7 @@ More refer to the release notes." </string>
 
     <string name="item_aruco_follow_title">ArUco Follow</string>
     <string name="item_aruco_follow_description">ArUco marker tracking with auto-land</string>
+
+    <string name="item_dashboard_server_title">LAN Dashboard Server</string>
+    <string name="item_dashboard_server_description">Serve camera + telemetry to a browser on the same Wi-Fi</string>
 </resources>

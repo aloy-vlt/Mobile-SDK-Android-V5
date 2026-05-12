@@ -131,4 +131,8 @@ dependencies {
     kapt deps.glidecompiler
     implementation deps.lynx
     implementation deps.opencv
+
+    // LAN dashboard server (HTTP + WebSocket)
+    implementation deps.nanoHttpd
+    implementation deps.nanoHttpdWs
 }

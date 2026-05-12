@@ -33,6 +33,7 @@ class AircraftFragmentPageInfoFactory : IFragmentPageInfoFactory {
             items.add(FragmentPageItem(R.id.mop_center_page, R.string.item_mop_title, R.string.item_mop_description))
             items.add(FragmentPageItem(R.id.look_at_page, R.string.item_look_at_title, R.string.item_look_at_description))
             items.add(FragmentPageItem(R.id.intelligent_flight_page, R.string.item_intelligent_flight_title, R.string.item_intelligent_flight__description))
+            items.add(FragmentPageItem(R.id.dashboard_server_page, R.string.item_dashboard_server_title, R.string.item_dashboard_server_description))
         }
     }
 }
