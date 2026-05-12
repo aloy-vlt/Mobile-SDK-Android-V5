@@ -227,4 +227,9 @@
         android:name="dji.sampleV5.aircraft.pages.IntelligentFlightFragment"
         android:label="intelligent_flight_page"
         tools:layout="@layout/frag_intelligent_flight_page"/>
+    <fragment
+        android:id="@+id/aruco_follow_page"
+        android:name="dji.sampleV5.aircraft.pages.ArucoFollowFragment"
+        android:label="aruco_follow_page"
+        tools:layout="@layout/frag_aruco_follow" />
 </navigation>

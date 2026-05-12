@@ -16,6 +16,7 @@ class AircraftFragmentPageInfoFactory : IFragmentPageInfoFactory {
     override fun createPageInfo(): FragmentPageItemList {
         return FragmentPageItemList(R.navigation.nav_aircraft).apply {
             items.add(FragmentPageItem(R.id.virtual_stick_page, R.string.item_virtual_stick_title, R.string.item_virtual_description))
+            items.add(FragmentPageItem(R.id.aruco_follow_page, R.string.item_aruco_follow_title, R.string.item_aruco_follow_description))
             items.add(FragmentPageItem(R.id.flight_record_page, R.string.item_flight_record_title, R.string.item_flight_record_description))
             items.add(FragmentPageItem(R.id.flight_upgrade_page, R.string.item_upgrade_title, R.string.item_upgrade_description))
             items.add(FragmentPageItem(R.id.flight_simulator_page, R.string.item_simulator_title, R.string.item_simulator_description))
