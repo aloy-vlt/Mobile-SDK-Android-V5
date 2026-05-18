@@ -500,4 +500,6 @@ More refer to the release notes." </string>
 
     <string name="item_dashboard_server_title">LAN Dashboard Server</string>
     <string name="item_dashboard_server_description">Serve camera + telemetry to a browser on the same Wi-Fi</string>
+    <string name="item_rtsp_streaming_title">RTSP Streaming</string>
+    <string name="item_rtsp_streaming_description">Expose the main camera as an RTSP feed for OpenCV / GStreamer / FFmpeg / VLC clients</string>
 </resources>

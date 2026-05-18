@@ -237,4 +237,9 @@
         android:name="dji.sampleV5.aircraft.pages.DashboardServerFragment"
         android:label="dashboard_server_page"
         tools:layout="@layout/frag_dashboard_server" />
+    <fragment
+        android:id="@+id/rtsp_streaming_page"
+        android:name="dji.sampleV5.aircraft.pages.RtspStreamingFragment"
+        android:label="rtsp_streaming_page"
+        tools:layout="@layout/frag_rtsp_streaming" />
 </navigation>

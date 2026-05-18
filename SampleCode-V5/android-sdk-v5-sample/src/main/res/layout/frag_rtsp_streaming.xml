@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#FF1A1A1A"
+    android:padding="24dp">
+
+    <TextView
+        android:id="@+id/tv_rtsp_title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="RTSP Streaming"
+        android:textColor="#FFFFFFFF"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <TextView
+        android:id="@+id/tv_rtsp_help"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:textColor="#FFBBBBBB"
+        android:textSize="13sp"
+        android:text="Re-publishes the main camera as a standard RTSP stream (H.264/H.265 passthrough, no re-encode). Any client on the same Wi-Fi can consume it — VLC, ffplay, GStreamer, OpenCV. Connect the drone first, then start."
+        app:layout_constraintTop_toBottomOf="@id/tv_rtsp_title"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <TextView
+        android:id="@+id/tv_rtsp_port_label"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="Port:"
+        android:textColor="#FFFFFFFF"
+        android:textSize="14sp"
+        app:layout_constraintTop_toBottomOf="@id/tv_rtsp_help"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <EditText
+        android:id="@+id/et_rtsp_port"
+        android:layout_width="100dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
+        android:inputType="number"
+        android:maxLength="5"
+        android:textColor="#FFFFFFFF"
+        android:textSize="14sp"
+        android:background="#FF333333"
+        android:padding="6dp"
+        app:layout_constraintTop_toTopOf="@id/tv_rtsp_port_label"
+        app:layout_constraintBottom_toBottomOf="@id/tv_rtsp_port_label"
+        app:layout_constraintStart_toEndOf="@id/tv_rtsp_port_label" />
+
+    <Button
+        android:id="@+id/btn_rtsp_toggle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="Start RTSP"
+        app:layout_constraintTop_toBottomOf="@id/et_rtsp_port"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <TextView
+        android:id="@+id/tv_rtsp_status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:textColor="#FF00FF00"
+        android:textSize="15sp"
+        android:fontFamily="monospace"
+        android:text="Stopped"
+        app:layout_constraintTop_toBottomOf="@id/btn_rtsp_toggle"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <TextView
+        android:id="@+id/tv_rtsp_url"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:textColor="#FFFFFF00"
+        android:textSize="16sp"
+        android:fontFamily="monospace"
+        android:textIsSelectable="true"
+        app:layout_constraintTop_toBottomOf="@id/tv_rtsp_status"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <TextView
+        android:id="@+id/tv_rtsp_stats"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:textColor="#FFBBBBBB"
+        android:textSize="14sp"
+        android:fontFamily="monospace"
+        android:text="Clients: 0"
+        app:layout_constraintTop_toBottomOf="@id/tv_rtsp_url"
+        app:layout_constraintStart_toStartOf="parent" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>
