@@ -51,6 +51,53 @@
                 android:fontFamily="monospace" />
         </LinearLayout>
 
+        <!-- OA mode row: 3 modes mapped to PerceptionManager.setObstacleAvoidanceType.
+             BRAKE = stop on obstacle (full OA), BYPASS = fly around (APAS),
+             OFF = OA disabled. OFF is the sane default for a rack-scan where the
+             drone is intentionally flying close to the rack. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingTop="2dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="OA:"
+                android:textColor="#FFFFFFFF"
+                android:textSize="10sp"
+                android:layout_marginEnd="6dp" />
+
+            <Button
+                android:id="@+id/btn_oa_brake"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:text="BRAKE"
+                android:textSize="9sp"
+                android:layout_margin="2dp" />
+
+            <Button
+                android:id="@+id/btn_oa_bypass"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:text="BYPASS"
+                android:textSize="9sp"
+                android:layout_margin="2dp" />
+
+            <Button
+                android:id="@+id/btn_oa_close"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:text="OFF"
+                android:textSize="9sp"
+                android:layout_margin="2dp" />
+        </LinearLayout>
+
         <!-- P / D sliders -->
         <LinearLayout
             android:layout_width="match_parent"

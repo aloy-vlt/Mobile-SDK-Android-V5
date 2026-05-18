@@ -28,8 +28,11 @@ import dji.sdk.keyvalue.value.flightcontroller.VirtualStickFlightControlParam
 import dji.v5.common.callback.CommonCallbacks
 import dji.v5.common.error.IDJIError
 import dji.v5.manager.aircraft.perception.PerceptionManager
+import dji.v5.manager.aircraft.perception.data.ObstacleAvoidanceType
 import dji.v5.manager.aircraft.perception.data.ObstacleData
+import dji.v5.manager.aircraft.perception.data.PerceptionInfo
 import dji.v5.manager.aircraft.perception.listener.ObstacleDataListener
+import dji.v5.manager.aircraft.perception.listener.PerceptionInformationListener
 import dji.v5.manager.aircraft.virtualstick.VirtualStickManager
 import dji.v5.manager.datacenter.MediaDataCenter
 import dji.v5.manager.interfaces.ICameraStreamManager
@@ -62,14 +65,14 @@ class ArucoFollowFragment : DJIFragment() {
         private const val MAX_ROLL_ANGLE_DEG = 15.0f
         private const val MAX_ROLL_RATIO     = 0.6f
 
-        // Centering kickstart — boosts tiny PD corrections above the FC hover-filter
-        private const val KICK_RATIO       = 0.25f   // min ratio before kick is needed
+        // Kickstart — boosts a too-small angle command above the FC hover-filter
+        // for KICK_DURATION_MS on the first non-zero output after a hover-lock.
+        // Same mechanism the LAN Dashboard's aruco-follow uses: any requested
+        // angle whose |ratio| ≥ KICK_RATIO passes through unchanged (no slam),
+        // anything below is floored to ±KICK_RATIO so the FC can't filter it out.
+        // Applies uniformly to centering, fine-tuning, AND sweep.
+        private const val KICK_RATIO       = 0.25f   // min ratio (≈3.75° tilt)
         private const val KICK_DURATION_MS = 300L
-
-        // Sweep hard-kick — sends MAX_ROLL for this long before dropping to sweep angle.
-        // Guarantees the drone breaks out of position-hold on every LEFT/RIGHT press,
-        // just like how takeoff gives full throttle first then settles at 1 m.
-        private const val SWEEP_KICK_DURATION_MS = 600L
 
         private const val CLIMB_SPEED_MPS      = 0.3f
         private const val SWEEP_CAPTURE_ZONE   = 0.55f   // normalised offset
@@ -106,6 +109,9 @@ class ArucoFollowFragment : DJIFragment() {
     private lateinit var btnGoRight: Button
     private lateinit var btnGoUp: Button
     private lateinit var btnStop: Button
+    private lateinit var btnOaBrake: Button
+    private lateinit var btnOaBypass: Button
+    private lateinit var btnOaClose: Button
 
     // Config
     private var numLevels    = 4
@@ -117,13 +123,18 @@ class ArucoFollowFragment : DJIFragment() {
     private var currentLevel    = 0
     private var isVSEnabled     = false
 
-    // PD controller
+    // PD controller (only used for CENTERING / FINE_TUNING — see pump)
     private var pGain      = 0.12f
     private var dGain      = 0.08f
     private var prevOffsetX = 0f
 
-    // Sweep — angle in degrees for sustained movement after the kick
-    private var sweepAngleDeg = 8f   // 5–15°
+    // Sweep cruise speed in m/s. Sweep uses VELOCITY mode (not ANGLE) because
+    // ANGLE with a steady-state attitude command fights the FC's position-hold
+    // outer loop; VELOCITY tells the FC to *travel* and is designed for cruise.
+    // Kept at minimum-safe values for rack scanning — close to obstacles means
+    // anything above ~0.3 m/s leaves little time to stop. Mini 4 Pro's velocity
+    // tracker silently ignores commands below ~0.10 m/s, so that's the floor.
+    private var sweepSpeedMps = 0.15f   // 0.10–0.40 m/s in 0.05 steps
 
     // Climb
     private var climbHeight    = 0.5f
@@ -144,12 +155,9 @@ class ArucoFollowFragment : DJIFragment() {
     @Volatile private var targetRollDeg: Float   = 0f
     @Volatile private var targetThrottleMps: Float = 0f
 
-    // Centering kickstart
+    // Kickstart state (shared by centering, fine-tuning, and sweep)
     @Volatile private var inHoverLock: Boolean = true
     @Volatile private var kickEndsAtMs: Long   = 0L
-
-    // Sweep hard-kick window
-    @Volatile private var sweepKickEndsAtMs: Long = 0L
 
     // Pump diagnostic counter — visible on screen so operator confirms pump is alive
     private val pumpTicks = AtomicLong(0L)
@@ -168,6 +176,16 @@ class ArucoFollowFragment : DJIFragment() {
                 else           -> -1f
             }
         } catch (_: Throwable) { -1f }
+    }
+
+    // Current OA mode — null until the first PerceptionInfo arrives. UI highlights match this.
+    @Volatile private var currentOaType: ObstacleAvoidanceType? = null
+    private val perceptionInfoListener = PerceptionInformationListener { info: PerceptionInfo? ->
+        val t = info?.obstacleAvoidanceType ?: return@PerceptionInformationListener
+        if (t != currentOaType) {
+            currentOaType = t
+            mainHandler.post { refreshOaButtons() }
+        }
     }
 
     private var commandTimer: Timer? = null
@@ -204,6 +222,8 @@ class ArucoFollowFragment : DJIFragment() {
         observeVirtualStickState()
         try { PerceptionManager.getInstance().addObstacleDataListener(obstacleListener) }
         catch (_: Throwable) {}
+        try { PerceptionManager.getInstance().addPerceptionInformationListener(perceptionInfoListener) }
+        catch (_: Throwable) {}
     }
 
     // ── VS state observer: detect external kills, don't nuke scan state ──
@@ -225,18 +245,22 @@ class ArucoFollowFragment : DJIFragment() {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // 20 Hz STICK PUMP — ALL ANGLE MODE
+    // 20 Hz STICK PUMP — HYBRID MODE
     //
-    // Every state uses sendVirtualStickAdvancedParam with ANGLE mode.
-    // This is the only lateral control mode proven to work on Mini 4 Pro.
+    // Centering / Fine-tuning → ANGLE mode (BODY frame).
+    //   Each frame, computeRollAngle(realOffsetX) writes targetRollDeg. The
+    //   pump sends that with the shared kickstart for sub-KICK_RATIO outputs.
+    //   This is the path proven by the Dashboard's aruco loop — short
+    //   corrections in a closed loop where offsetX naturally varies.
     //
-    // SWEEPING: sends MAX_ROLL_ANGLE for SWEEP_KICK_DURATION_MS first
-    //   (guaranteed position-hold break, same principle as takeoff full-
-    //   throttle burst), then settles to sweepAngleDeg for sustained travel.
+    // Sweeping → VELOCITY mode (BODY frame).
+    //   ANGLE mode with a constant attitude command fights the FC's position-
+    //   hold outer loop (drone moves a bit, FC counter-tilts, drone stalls).
+    //   VELOCITY mode tells the FC to *travel* at sweepSpeedMps and the FC
+    //   handles attitude internally, including overriding position-hold.
+    //   This is the API DJI tuned for sustained directional motion.
     //
-    // CENTERING / FINE_TUNING: PD output with kickstart for small corrections.
-    //
-    // CLIMBING: throttle via VELOCITY vertical channel, roll = 0.
+    // Climbing → ANGLE roll = 0, verticalThrottle = CLIMB_SPEED_MPS.
     // ═══════════════════════════════════════════════════════════════════
 
     private fun startCommandLoop() {
@@ -251,45 +275,41 @@ class ArucoFollowFragment : DJIFragment() {
                                  state == ScanState.SWEEPING_RIGHT
 
                 try {
-                    val rollToSend: Double = when {
-                        isSweeping -> {
-                            // Sweep direction preserved even during kick window
-                            val dir = if (state == ScanState.SWEEPING_RIGHT) 1.0 else -1.0
-                            if (now < sweepKickEndsAtMs) {
-                                // Hard kick: full MAX angle to break position-hold
-                                MAX_ROLL_ANGLE_DEG * dir
-                            } else {
-                                // Sustained sweep at configured angle
-                                targetRollDeg.toDouble()
-                            }
-                        }
-                        targetRollDeg == 0f -> {
-                            inHoverLock = true
-                            0.0
-                        }
-                        else -> {
-                            // Centering / fine-tuning with kickstart
-                            if (inHoverLock) {
-                                inHoverLock = false
-                                kickEndsAtMs = now + KICK_DURATION_MS
-                            }
-                            val ratio = (targetRollDeg / MAX_ROLL_ANGLE_DEG)
-                            val kicked = if (now < kickEndsAtMs && abs(ratio) < KICK_RATIO)
-                                (if (ratio > 0f) KICK_RATIO else -KICK_RATIO)
-                            else ratio
-                            (kicked * MAX_ROLL_ANGLE_DEG).toDouble()
-                        }
-                    }
-
                     val param = VirtualStickFlightControlParam().apply {
                         rollPitchCoordinateSystem = FlightCoordinateSystem.BODY
-                        rollPitchControlMode      = RollPitchControlMode.ANGLE
                         yawControlMode            = YawControlMode.ANGULAR_VELOCITY
                         verticalControlMode       = VerticalControlMode.VELOCITY
-                        roll             = rollToSend
-                        pitch            = 0.0
-                        yaw              = 0.0
-                        verticalThrottle = targetThrottleMps.toDouble()
+                        yaw                       = 0.0
+                        verticalThrottle          = targetThrottleMps.toDouble()
+                        if (isSweeping) {
+                            // DJI MSDK V5 convention: in VELOCITY mode, `pitch`
+                            // and `roll` are linear velocities ALONG the named
+                            // axis. Roll axis is longitudinal (fwd/back), pitch
+                            // axis is lateral (left/right). So lateral motion
+                            // is driven via `pitch`, not `roll` — opposite of
+                            // ANGLE-mode where `roll` is body-roll attitude.
+                            rollPitchControlMode = RollPitchControlMode.VELOCITY
+                            val dir = if (state == ScanState.SWEEPING_RIGHT) 1.0 else -1.0
+                            pitch = sweepSpeedMps.toDouble() * dir
+                            roll  = 0.0
+                        } else {
+                            rollPitchControlMode = RollPitchControlMode.ANGLE
+                            pitch = 0.0
+                            roll = if (targetRollDeg == 0f) {
+                                inHoverLock = true
+                                0.0
+                            } else {
+                                if (inHoverLock) {
+                                    inHoverLock = false
+                                    kickEndsAtMs = now + KICK_DURATION_MS
+                                }
+                                val ratio = targetRollDeg / MAX_ROLL_ANGLE_DEG
+                                val kicked = if (now < kickEndsAtMs && abs(ratio) < KICK_RATIO)
+                                    (if (ratio > 0f) KICK_RATIO else -KICK_RATIO)
+                                else ratio
+                                (kicked * MAX_ROLL_ANGLE_DEG).toDouble()
+                            }
+                        }
                     }
                     VirtualStickManager.getInstance().sendVirtualStickAdvancedParam(param)
                     pumpTicks.incrementAndGet()
@@ -298,7 +318,7 @@ class ArucoFollowFragment : DJIFragment() {
                 }
 
                 // Safety watchdogs
-                if (isSweeping) {
+                if (state == ScanState.SWEEPING_LEFT || state == ScanState.SWEEPING_RIGHT) {
                     if (now - lastMarkerSeenTime > SAFETY_TIMEOUT_MS &&
                         now - movementStartTime > SAFETY_TIMEOUT_MS) {
                         mainHandler.post { safetyStop("No marker ${SAFETY_TIMEOUT_MS / 1000}s") }
@@ -342,6 +362,14 @@ class ArucoFollowFragment : DJIFragment() {
         btnGoRight   = view.findViewById(R.id.btn_go_right)
         btnGoUp      = view.findViewById(R.id.btn_go_up)
         btnStop      = view.findViewById(R.id.btn_stop)
+        btnOaBrake   = view.findViewById(R.id.btn_oa_brake)
+        btnOaBypass  = view.findViewById(R.id.btn_oa_bypass)
+        btnOaClose   = view.findViewById(R.id.btn_oa_close)
+
+        btnOaBrake .setOnClickListener { requestOaType(ObstacleAvoidanceType.BRAKE) }
+        btnOaBypass.setOnClickListener { requestOaType(ObstacleAvoidanceType.BYPASS) }
+        btnOaClose .setOnClickListener { requestOaType(ObstacleAvoidanceType.CLOSE) }
+        refreshOaButtons()
 
         etLevels.setText(numLevels.toString())
         updateActionButtons()
@@ -422,16 +450,13 @@ class ArucoFollowFragment : DJIFragment() {
         seekDGain.progress = (dGain * 100).toInt()
         seekDGain.setOnSeekBarChangeListener(slider { p -> dGain = p / 100f; updateConfigText() })
 
-        // Sweep angle: 5° – 15° in 1° steps (max=10), default 8°
-        seekSweepSpeed.max = 10
-        seekSweepSpeed.progress = (sweepAngleDeg - 5f).toInt()
+        // Sweep cruise speed: 0.10–0.40 m/s in 0.05 m/s steps (max=6),
+        // default 0.15 m/s. The pump reads sweepSpeedMps every tick so a
+        // slider change is picked up on the next pump cycle (≤50 ms).
+        seekSweepSpeed.max = 6
+        seekSweepSpeed.progress = ((sweepSpeedMps - 0.10f) / 0.05f).toInt()
         seekSweepSpeed.setOnSeekBarChangeListener(slider { p ->
-            sweepAngleDeg = 5f + p.toFloat(); updateConfigText()
-            when (state) {
-                ScanState.SWEEPING_RIGHT -> targetRollDeg =  sweepAngleDeg
-                ScanState.SWEEPING_LEFT  -> targetRollDeg = -sweepAngleDeg
-                else -> {}
-            }
+            sweepSpeedMps = 0.10f + p * 0.05f; updateConfigText()
         })
 
         // Climb height: 0.2 – 1.2 m
@@ -475,17 +500,20 @@ class ArucoFollowFragment : DJIFragment() {
             currentTargetId = (currentTargetId + 1).coerceAtMost(totalMarkers - 1)
         }
 
-        // Set sustained sweep angle and arm the hard-kick window.
-        // The pump will send MAX_ROLL_ANGLE for SWEEP_KICK_DURATION_MS first,
-        // then drop to targetRollDeg — guaranteeing position-hold is broken.
-        targetRollDeg     = sweepAngleDeg * direction
+        // VELOCITY-mode sweep: the pump now sends roll = sweepSpeedMps in
+        // BODY-frame VELOCITY mode while state is SWEEPING_*. The FC handles
+        // attitude and overrides its own position-hold to honor the velocity
+        // command, which is what ANGLE mode couldn't do on a constant input.
+        // No PD priming needed — that path only runs for centering.
+        prevOffsetX       = 0f
+        targetRollDeg     = 0f
         targetThrottleMps = 0f
-        sweepKickEndsAtMs = System.currentTimeMillis() + SWEEP_KICK_DURATION_MS
+        inHoverLock       = true
 
         state = if (direction > 0) ScanState.SWEEPING_RIGHT else ScanState.SWEEPING_LEFT
         val dir = if (direction > 0) "RIGHT" else "LEFT"
-        Log.i(TAG, "Sweep $dir kick→15° then ${sweepAngleDeg}°, marker $currentTargetId")
-        ToastUtils.showToast("Sweeping $dir → marker $currentTargetId")
+        Log.i(TAG, "Sweep $dir at ${sweepSpeedMps} m/s, marker $currentTargetId")
+        ToastUtils.showToast("Sweeping $dir → marker $currentTargetId (${sweepSpeedMps}m/s)")
         updateUI()
     }
 
@@ -574,8 +602,16 @@ class ArucoFollowFragment : DJIFragment() {
                     }
                 }
                 ScanState.SWEEPING_LEFT, ScanState.SWEEPING_RIGHT -> {
+                    // Sweep is driven by the pump in VELOCITY mode from
+                    // sweepSpeedMps — no PD writes from the frame thread.
+                    // Just watch for the target marker entering the capture
+                    // zone and hand off to CENTERING, seeding prevOffsetX so
+                    // the first centering D-term doesn't spike from 0.
                     if (detected && abs(offsetX) < SWEEP_CAPTURE_ZONE) {
-                        state = ScanState.CENTERING; mainHandler.post { updateUI() }
+                        prevOffsetX = offsetX
+                        targetRollDeg = 0f      // pump will see ANGLE 0° during the brief gap
+                        state = ScanState.CENTERING
+                        mainHandler.post { updateUI() }
                     }
                 }
                 ScanState.CLIMBING -> {
@@ -599,7 +635,7 @@ class ArucoFollowFragment : DJIFragment() {
             val fTicks = pumpTicks.get(); val now = System.currentTimeMillis()
             val fObs = nearestObstacleM
             val isSweeping = state == ScanState.SWEEPING_LEFT || state == ScanState.SWEEPING_RIGHT
-            val inKick = now < sweepKickEndsAtMs
+            val inKick = now < kickEndsAtMs
 
             mainHandler.post {
                 imgPreview.setImageBitmap(bmp)
@@ -613,9 +649,9 @@ class ArucoFollowFragment : DJIFragment() {
                 }
 
                 val modeTag = when {
-                    isSweeping && inKick -> "KICK→${MAX_ROLL_ANGLE_DEG.toInt()}°"
-                    isSweeping           -> "SWEEP ${fRoll.toInt()}°"
-                    else                 -> "ANG ${fRoll.toInt()}°"
+                    isSweeping -> "SWEEP %.2fm/s".format(sweepSpeedMps)
+                    inKick     -> "ANG* ${fRoll.toInt()}°"
+                    else       -> "ANG ${fRoll.toInt()}°"
                 }
                 tvStickDebug.text = "$modeTag thr=${fThr} pump=#$fTicks"
 
@@ -690,8 +726,8 @@ class ArucoFollowFragment : DJIFragment() {
             ScanState.IDLE        -> "IDLE — Set levels & Start Scan"
             ScanState.CENTERING   -> "CENTERING on marker $currentTargetId..."
             ScanState.CENTERED    -> "CENTERED marker $currentTargetId (L${currentLevel + 1})\nChoose: LEFT / RIGHT / UP"
-            ScanState.SWEEPING_LEFT  -> "SWEEP LEFT → marker $currentTargetId (${sweepAngleDeg.toInt()}°)"
-            ScanState.SWEEPING_RIGHT -> "SWEEP RIGHT → marker $currentTargetId (${sweepAngleDeg.toInt()}°)"
+            ScanState.SWEEPING_LEFT  -> "SWEEP LEFT → marker $currentTargetId (%.2fm/s)".format(sweepSpeedMps)
+            ScanState.SWEEPING_RIGHT -> "SWEEP RIGHT → marker $currentTargetId (%.2fm/s)".format(sweepSpeedMps)
             ScanState.CLIMBING    -> "CLIMBING L${currentLevel + 1} %.1fs/%.1fs".format(
                 (System.currentTimeMillis() - climbStartTime) / 1000f, climbDurationMs / 1000f)
             ScanState.FINE_TUNING -> "FINE-TUNING marker $currentTargetId"
@@ -700,8 +736,49 @@ class ArucoFollowFragment : DJIFragment() {
     }
 
     private fun updateConfigText() {
-        tvConfigInfo.text = "P:%.2f D:%.2f | Swp:${sweepAngleDeg.toInt()}° kick:${SWEEP_KICK_DURATION_MS/1000f}s | Clb:${CLIMB_SPEED_MPS}m/s H:${climbHeight}m"
-            .format(pGain, dGain)
+        tvConfigInfo.text = "P:%.2f D:%.2f | Swp:%.2fm/s | Clb:${CLIMB_SPEED_MPS}m/s H:${climbHeight}m"
+            .format(pGain, dGain, sweepSpeedMps)
+    }
+
+    // ── OA mode toggle ──
+
+    private fun requestOaType(type: ObstacleAvoidanceType) {
+        // Optimistic UI: tint the requested button immediately. The perception
+        // info listener will confirm (or correct) the highlight on next update.
+        val previous = currentOaType
+        currentOaType = type
+        refreshOaButtons()
+        try {
+            PerceptionManager.getInstance().setObstacleAvoidanceType(type, object :
+                CommonCallbacks.CompletionCallback {
+                override fun onSuccess() {
+                    Log.i(TAG, "OA mode → $type")
+                    ToastUtils.showToast("OA: $type")
+                }
+                override fun onFailure(e: IDJIError) {
+                    Log.w(TAG, "OA set $type failed: $e")
+                    ToastUtils.showToast("OA set failed: $e")
+                    currentOaType = previous
+                    mainHandler.post { refreshOaButtons() }
+                }
+            })
+        } catch (t: Throwable) {
+            Log.w(TAG, "OA set $type threw: ${t.message}")
+            currentOaType = previous
+            refreshOaButtons()
+        }
+    }
+
+    private fun refreshOaButtons() {
+        // Active = green, inactive = gray. UNKNOWN/null → all gray (no claim).
+        val active   = 0xFF2E7D32.toInt()
+        val inactive = 0xFF555555.toInt()
+        btnOaBrake .backgroundTintList = android.content.res.ColorStateList.valueOf(
+            if (currentOaType == ObstacleAvoidanceType.BRAKE ) active else inactive)
+        btnOaBypass.backgroundTintList = android.content.res.ColorStateList.valueOf(
+            if (currentOaType == ObstacleAvoidanceType.BYPASS) active else inactive)
+        btnOaClose .backgroundTintList = android.content.res.ColorStateList.valueOf(
+            if (currentOaType == ObstacleAvoidanceType.CLOSE ) active else inactive)
     }
 
     override fun onDestroyView() {
@@ -710,6 +787,8 @@ class ArucoFollowFragment : DJIFragment() {
         try { VirtualStickManager.getInstance().setVirtualStickAdvancedModeEnabled(false) }
         catch (_: Throwable) {}
         try { PerceptionManager.getInstance().removeObstacleDataListener(obstacleListener) }
+        catch (_: Throwable) {}
+        try { PerceptionManager.getInstance().removePerceptionInformationListener(perceptionInfoListener) }
         catch (_: Throwable) {}
         try { MediaDataCenter.getInstance().cameraStreamManager.removeFrameListener(frameListener) }
         catch (_: Exception) {}
