@@ -169,18 +169,18 @@
             <TextView
                 android:layout_width="24dp"
                 android:layout_height="wrap_content"
-                android:text="Hgt"
+                android:text="Clb"
                 android:textColor="#FFCC88CC"
                 android:textSize="9sp"
                 android:gravity="center" />
 
             <SeekBar
-                android:id="@+id/seek_climb_height"
+                android:id="@+id/seek_climb_speed"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:max="10"
-                android:progress="3" />
+                android:max="6"
+                android:progress="1" />
         </LinearLayout>
     </LinearLayout>
 
@@ -304,62 +304,100 @@
         android:layout_height="12dp"
         android:background="#FF2A2A2A" />
 
-    <!-- Action buttons (big, bold, color-coded) -->
+    <!-- Action buttons — single row: LEFT / UP / DOWN / RIGHT / STOP.
+         Equal weights, compact padding/text so nothing is occluded. -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="center"
-        android:paddingStart="4dp"
-        android:paddingEnd="4dp"
+        android:paddingStart="2dp"
+        android:paddingEnd="2dp"
         android:paddingBottom="6dp"
         android:background="#FF2A2A2A">
 
         <Button
             android:id="@+id/btn_go_left"
             android:layout_width="0dp"
-            android:layout_height="52dp"
+            android:layout_height="48dp"
             android:layout_weight="1"
-            android:text="◄ LEFT"
-            android:textSize="14sp"
+            android:text="◄ L"
+            android:textSize="11sp"
             android:textStyle="bold"
-            android:layout_margin="3dp"
+            android:paddingStart="0dp"
+            android:paddingEnd="0dp"
+            android:minWidth="0dp"
+            android:insetLeft="0dp"
+            android:insetRight="0dp"
+            android:layout_margin="2dp"
             android:visibility="gone"
             android:backgroundTint="#FF2E7D32" />
 
         <Button
             android:id="@+id/btn_go_up"
             android:layout_width="0dp"
-            android:layout_height="52dp"
+            android:layout_height="48dp"
             android:layout_weight="1"
             android:text="▲ UP"
-            android:textSize="14sp"
+            android:textSize="11sp"
             android:textStyle="bold"
-            android:layout_margin="3dp"
+            android:paddingStart="0dp"
+            android:paddingEnd="0dp"
+            android:minWidth="0dp"
+            android:insetLeft="0dp"
+            android:insetRight="0dp"
+            android:layout_margin="2dp"
+            android:visibility="gone"
+            android:backgroundTint="#FF1565C0" />
+
+        <Button
+            android:id="@+id/btn_go_down"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_weight="1"
+            android:text="▼ DN"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:paddingStart="0dp"
+            android:paddingEnd="0dp"
+            android:minWidth="0dp"
+            android:insetLeft="0dp"
+            android:insetRight="0dp"
+            android:layout_margin="2dp"
             android:visibility="gone"
             android:backgroundTint="#FF1565C0" />
 
         <Button
             android:id="@+id/btn_go_right"
             android:layout_width="0dp"
-            android:layout_height="52dp"
+            android:layout_height="48dp"
             android:layout_weight="1"
-            android:text="RIGHT ►"
-            android:textSize="14sp"
+            android:text="R ►"
+            android:textSize="11sp"
             android:textStyle="bold"
-            android:layout_margin="3dp"
+            android:paddingStart="0dp"
+            android:paddingEnd="0dp"
+            android:minWidth="0dp"
+            android:insetLeft="0dp"
+            android:insetRight="0dp"
+            android:layout_margin="2dp"
             android:visibility="gone"
             android:backgroundTint="#FF2E7D32" />
 
         <Button
             android:id="@+id/btn_stop"
             android:layout_width="0dp"
-            android:layout_height="52dp"
+            android:layout_height="48dp"
             android:layout_weight="1"
             android:text="■ STOP"
-            android:textSize="14sp"
+            android:textSize="11sp"
             android:textStyle="bold"
-            android:layout_margin="3dp"
+            android:paddingStart="0dp"
+            android:paddingEnd="0dp"
+            android:minWidth="0dp"
+            android:insetLeft="0dp"
+            android:insetRight="0dp"
+            android:layout_margin="2dp"
             android:visibility="gone"
             android:backgroundTint="#FFC62828" />
     </LinearLayout>

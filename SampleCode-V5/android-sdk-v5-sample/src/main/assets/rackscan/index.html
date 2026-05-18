@@ -1,0 +1,942 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rack Scan Dashboard</title>
+  <style>
+    :root {
+      --bg: #111; --fg: #ddd; --dim: #888; --border: #2a2a2a;
+      --ok: #4ade80; --warn: #f59e0b; --err: #f87171; --hi: #60a5fa;
+      --kick: #c084fc;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+           background: var(--bg); color: var(--fg); padding: 8px; }
+    h1 { font-size: 14px; margin: 0 0 8px 0; color: var(--fg);
+         border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+    .status { display: inline-block; padding: 1px 6px; border-radius: 3px;
+              font-size: 11px; font-weight: bold; }
+    .status.live { background: var(--ok); color: #000; }
+    .status.dead { background: var(--err); color: #fff; }
+    .row { display: flex; gap: 8px; margin-bottom: 8px; }
+    .col { flex: 1; min-width: 0; }
+    .card { background: #1a1a1a; border: 1px solid var(--border);
+            border-radius: 4px; padding: 8px; }
+    .card h2 { font-size: 12px; margin: 0 0 6px 0; color: var(--dim); text-transform: uppercase; }
+    table.kv { width: 100%; border-collapse: collapse; }
+    table.kv td { padding: 2px 4px; vertical-align: top; }
+    table.kv td.k { color: var(--dim); width: 45%; }
+    table.kv td.v { color: var(--fg); font-weight: bold; word-break: break-all; }
+    .v.hi   { color: var(--hi); }
+    .v.ok   { color: var(--ok); }
+    .v.warn { color: var(--warn); }
+    .v.err  { color: var(--err); }
+    .v.kick { color: var(--kick); }
+    .v.dim  { color: var(--dim); font-weight: normal; }
+    pre.log { margin: 0; padding: 6px; background: #0a0a0a; border-radius: 3px;
+              max-height: 60vh; overflow-y: auto; font-size: 11px; line-height: 1.3; }
+    pre.log .ts  { color: var(--dim); }
+    pre.log .tag { color: var(--hi); }
+    pre.log .lI  { color: var(--fg); }
+    pre.log .lW  { color: var(--warn); }
+    pre.log .lE  { color: var(--err); }
+    .pill { display: inline-block; padding: 0 6px; border-radius: 3px;
+            background: #2a2a2a; color: var(--fg); font-size: 11px; }
+    .pill.on  { background: var(--ok); color: #000; }
+    .pill.off { background: #2a2a2a; color: var(--dim); }
+
+    /* Mission section */
+    .mission-controls { display: flex; gap: 6px; align-items: center;
+                        flex-wrap: wrap; margin-bottom: 8px; }
+    .mission-controls select, .mission-controls input { background: #2a2a2a;
+        color: var(--fg); border: 1px solid var(--border); padding: 3px 6px;
+        font: inherit; border-radius: 3px; }
+    .mission-controls input { width: 70px; }
+    .mission-controls .spacer { flex: 1; }
+    .mission-controls button { background: #2a2a2a; color: var(--fg);
+        border: 1px solid var(--border); padding: 4px 10px; cursor: pointer;
+        font: inherit; border-radius: 3px; }
+    .mission-controls button:hover { background: #3a3a3a; }
+    .mission-controls button.primary { background: var(--ok); color: #000;
+        border-color: var(--ok); font-weight: bold; }
+    .mission-controls button.danger  { background: var(--err); color: #fff;
+        border-color: var(--err); font-weight: bold; }
+    .mission-controls button.secondary { color: var(--dim); }
+    .mission-list { list-style: none; padding: 0; margin: 0 0 8px 0;
+                    max-height: 100px; overflow-y: auto;
+                    background: #0a0a0a; border-radius: 3px;
+                    border: 1px solid var(--border); }
+    .mission-list:empty::before { content: "no steps queued";
+        display: block; padding: 4px 8px; color: var(--dim); font-style: italic; }
+    .mission-list li { padding: 3px 8px; display: flex;
+        justify-content: space-between; align-items: center;
+        border-bottom: 1px solid var(--border); font-size: 12px; }
+    .mission-list li:last-child { border-bottom: none; }
+    .mission-list li.active { background: #1f3a1f; }
+    .mission-list .del { color: var(--err); cursor: pointer; padding: 0 6px;
+        background: transparent; border: none; font: inherit; }
+    .timeline-wrap { display: flex; align-items: center; gap: 6px; }
+    .timeline-label { color: var(--dim); font-size: 11px;
+        text-transform: uppercase; min-width: 60px; }
+    .timeline { flex: 1; height: 28px; background: #0a0a0a;
+        border: 1px solid var(--border); border-radius: 3px;
+        display: flex; overflow: hidden; }
+    .timeline .blk { display: flex; align-items: center; justify-content: center;
+        font-size: 11px; font-weight: bold; color: #000;
+        border-right: 1px solid rgba(0,0,0,.3); min-width: 22px; }
+    .timeline .blk:last-child { border-right: none; }
+    .timeline .blk.LEFT,  .timeline .blk.RIGHT { background: var(--hi); }
+    .timeline .blk.UP,    .timeline .blk.DOWN  { background: var(--ok); }
+    .timeline .blk.HOVER                       { background: #777; color: #fff; }
+    .timeline .blk.LAND                        { background: var(--err); color: #fff; }
+    /* Progress states on the timeline mirror the flight-path conventions. */
+    .timeline .blk.progress-done    { opacity: 0.40; }
+    .timeline .blk.progress-current { outline: 2px solid var(--warn);
+        outline-offset: -2px; }
+    .timeline .blk.progress-upcoming { opacity: 0.45; }
+    .timeline:empty::before { content: "empty"; display: flex;
+        align-items: center; padding: 0 8px; color: var(--dim); }
+
+    /* Flight-control bar */
+    .flight-bar h2 { display: inline-block; margin-right: 12px; }
+    .flight-buttons { display: inline-flex; gap: 6px; }
+    .flight-buttons button { background: #2a2a2a; color: var(--fg);
+        border: 1px solid var(--border); padding: 6px 14px; cursor: pointer;
+        font: inherit; border-radius: 3px; font-weight: bold; }
+    .flight-buttons button:hover { background: #3a3a3a; }
+    .flight-buttons button.primary { background: var(--ok); color: #000;
+        border-color: var(--ok); }
+    .flight-buttons button.danger  { background: var(--err); color: #fff;
+        border-color: var(--err); }
+    .flight-buttons button.secondary { color: var(--dim); }
+
+    /* Loop toggle */
+    .loop-toggle { color: var(--dim); display: inline-flex; align-items: center;
+        gap: 4px; font-size: 12px; user-select: none; cursor: pointer; }
+    .loop-toggle input { margin: 0; cursor: pointer; }
+
+    /* Flight path whiteboard */
+    .path-wrap { margin-top: 10px; }
+    .path-header { display: flex; align-items: center; justify-content: space-between;
+        color: var(--dim); font-size: 11px; text-transform: uppercase;
+        margin-bottom: 4px; }
+    .path-legend { display: flex; gap: 10px; text-transform: none;
+        font-size: 10px; align-items: center; }
+    .leg-dot  { display: inline-block; width: 8px; height: 8px;
+        border-radius: 50%; margin-right: 2px; vertical-align: middle; }
+    .leg-dot.S    { background: var(--ok); }
+    .leg-dot.E    { background: var(--err); }
+    .leg-dot.LIVE { background: #f59e0b; box-shadow: 0 0 6px #f59e0b; }
+    .leg-line { display: inline-block; width: 16px; height: 2px;
+        margin-right: 2px; vertical-align: middle; }
+    .leg-line.LR { background: var(--hi); }
+    .leg-line.UD { background: var(--ok); }
+    .flight-path { display: block; width: 100%; height: 280px;
+        background: #fafafa; border: 1px solid var(--border); border-radius: 3px; }
+    .flight-path .grid { stroke: #e4e4e4; stroke-width: 1; }
+    .flight-path .axis { stroke: #aaa; stroke-width: 1; stroke-dasharray: 2 3; }
+    .flight-path .tick { fill: #888; font: 10px ui-monospace, monospace; }
+    .flight-path .seg-LR { stroke: #2563eb; stroke-width: 3; fill: none;
+        stroke-linecap: round; stroke-linejoin: round; }
+    .flight-path .seg-UD { stroke: #16a34a; stroke-width: 3; fill: none;
+        stroke-linecap: round; stroke-linejoin: round; }
+    .flight-path .seg-HOVER { stroke: #888; stroke-width: 3; fill: none;
+        stroke-dasharray: 3 4; }
+    .flight-path .seg-LAND  { fill: #dc2626; stroke: #fff; stroke-width: 1.5; }
+    /* Progress states (applied during execution; "planned" is the default
+       look used while building / idle). Subtle differentiation only — no
+       glow / drop-shadow / pulsing so labels stay readable. */
+    .flight-path .progress-done    { opacity: 0.4; }
+    /* Same stroke-width as the rest of the segments so the colour difference
+       is the signal, not the thickness. Otherwise labels under the segment
+       get visually overwhelmed. */
+    .flight-path .progress-current { stroke: #f59e0b !important; }
+    .flight-path .progress-upcoming { opacity: 0.5; stroke-dasharray: 6 5; }
+    .flight-path .dot-start { fill: #16a34a; stroke: #fff; stroke-width: 1.5; }
+    .flight-path .dot-end   { fill: #dc2626; stroke: #fff; stroke-width: 1.5; }
+    /* Live drone indicator — simple orange dot, no glow. */
+    .flight-path .live-drone {
+        fill: #f59e0b;
+        stroke: #fff;
+        stroke-width: 1.5;
+    }
+    .flight-path .seg-label { fill: #444; font: 10px ui-monospace, monospace;
+        text-anchor: middle; pointer-events: none;
+        /* White halo so the text reads on top of any segment colour. */
+        paint-order: stroke fill; stroke: #fafafa; stroke-width: 3;
+        stroke-linejoin: round; }
+    .flight-path .empty-msg { fill: #888; font: 12px ui-monospace, monospace;
+        text-anchor: middle; }
+  </style>
+</head>
+<body>
+  <h1>
+    Rack Scan Dashboard
+    <span id="conn" class="status dead">offline</span>
+    <span style="float:right;font-weight:normal;color:var(--dim);">
+      pushes: <span id="pushes">0</span> &middot; ws msgs: <span id="msgs">0</span>
+    </span>
+  </h1>
+
+  <div class="card flight-bar">
+    <h2>Flight control</h2>
+    <div class="flight-buttons">
+      <button id="btnTakeoff"  class="primary">▲ Take Off</button>
+      <button id="btnLand"     class="danger">⏏ Land</button>
+      <button id="btnEnableVS">Enable VS</button>
+      <button id="btnDisableVS" class="secondary">Disable VS</button>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="col card">
+      <h2>State machine</h2>
+      <table class="kv">
+        <tr><td class="k">state</td><td class="v hi" id="stateName">—</td></tr>
+        <tr><td class="k">target marker</td><td class="v" id="currentTargetId">—</td></tr>
+        <tr><td class="k">level</td><td class="v" id="currentLevel">—</td></tr>
+        <tr><td class="k">layout</td><td class="v dim" id="layout">—</td></tr>
+        <tr><td class="k">tracking</td><td class="v" id="isTracking">—</td></tr>
+        <tr><td class="k">VS enabled</td><td class="v" id="isVSEnabled">—</td></tr>
+      </table>
+    </div>
+    <div class="col card">
+      <h2>Marker (last frame)</h2>
+      <table class="kv">
+        <tr><td class="k">detected</td><td class="v" id="detected">—</td></tr>
+        <tr><td class="k">offset X</td><td class="v" id="offsetX">—</td></tr>
+        <tr><td class="k">marker size</td><td class="v" id="markerSize">—</td></tr>
+        <tr><td class="k">visible IDs</td><td class="v dim" id="visibleIds">—</td></tr>
+        <tr><td class="k">last seen age</td><td class="v" id="lastMarkerAgeSec">—</td></tr>
+      </table>
+    </div>
+    <div class="col card">
+      <h2>Pump output (last tick)</h2>
+      <table class="kv">
+        <tr><td class="k">roll/pitch mode</td><td class="v" id="rollPitchControlMode">—</td></tr>
+        <tr><td class="k">vertical mode</td><td class="v" id="verticalControlMode">—</td></tr>
+        <tr><td class="k">roll (deg)</td><td class="v" id="rollDeg">—</td></tr>
+        <tr><td class="k">pitch (m/s)</td><td class="v" id="pitchMps">—</td></tr>
+        <tr><td class="k">vertical cmd</td><td class="v hi" id="verticalThrottleMps">—</td></tr>
+        <tr><td class="k">pump ticks</td><td class="v dim" id="pumpTicks">—</td></tr>
+        <tr><td class="k">lat. idle (roll=0)</td><td class="v" id="inHoverLock">—</td></tr>
+        <tr><td class="k">lateral kick</td><td class="v" id="inKick">—</td></tr>
+        <tr><td class="k">vertical kick</td><td class="v kick" id="inVerticalKick">—</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="col card">
+      <h2>Knobs</h2>
+      <table class="kv">
+        <tr><td class="k">P gain</td><td class="v" id="pGain">—</td></tr>
+        <tr><td class="k">D gain</td><td class="v" id="dGain">—</td></tr>
+        <tr><td class="k">sweep speed</td><td class="v" id="sweepSpeedMps">—</td></tr>
+        <tr><td class="k">climb speed</td><td class="v" id="climbSpeedMps">—</td></tr>
+      </table>
+    </div>
+    <div class="col card">
+      <h2>Flight</h2>
+      <table class="kv">
+        <tr><td class="k">altitude</td><td class="v hi" id="altitudeM">—</td></tr>
+        <tr><td class="k">height limit</td><td class="v" id="heightLimitM">—</td></tr>
+        <tr><td class="k">OA mode</td><td class="v" id="oaMode">—</td></tr>
+        <tr><td class="k">nearest obstacle</td><td class="v" id="nearestObstacleM">—</td></tr>
+        <tr><td class="k">motors on</td><td class="v" id="motorsOn">—</td></tr>
+        <tr><td class="k">VPS disabled (by us)</td><td class="v" id="vpsDisabledByUs">—</td></tr>
+        <tr><td class="k">FC velocity (x,y,z)</td><td class="v hi" id="velocityXYZ">—</td></tr>
+      </table>
+    </div>
+    <div class="col card">
+      <h2>Connection</h2>
+      <table class="kv">
+        <tr><td class="k">URL</td><td class="v dim" id="wsUrl">—</td></tr>
+        <tr><td class="k">last update</td><td class="v dim" id="lastUpdate">—</td></tr>
+        <tr><td class="k">server push #</td><td class="v dim" id="serverPushCount">—</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="card mission">
+    <h2>
+      Mission
+      <span id="missionStatus" style="float:right;font-weight:normal;color:var(--dim);">idle</span>
+    </h2>
+    <div class="mission-controls">
+      <select id="missionAction">
+        <option value="LEFT">LEFT (seconds)</option>
+        <option value="RIGHT">RIGHT (seconds)</option>
+        <option value="UP">UP (meters)</option>
+        <option value="DOWN">DOWN (meters)</option>
+        <option value="HOVER">HOVER (seconds)</option>
+        <option value="LAND">LAND</option>
+      </select>
+      <input id="missionValue" type="number" step="0.1" min="0.1" max="30" value="2.0" />
+      <button id="btnAdd">+ Add step</button>
+      <button id="btnRetrace" title="Fly back along the last-run path">↻ Retrace</button>
+      <button id="btnClear" class="secondary">Clear</button>
+      <span class="spacer"></span>
+      <label class="loop-toggle">
+        <input id="chkLoop" type="checkbox" /> loop
+      </label>
+      <button id="btnSimulate" title="Run a pure-browser simulation — no drone required">⚙ Simulate</button>
+      <button id="btnRun" class="primary">▶ Run mission</button>
+      <button id="btnStop" class="danger">■ Stop</button>
+    </div>
+    <ul id="missionList" class="mission-list"></ul>
+    <div class="timeline-wrap">
+      <div class="timeline-label">Timeline</div>
+      <div id="timeline" class="timeline"></div>
+    </div>
+    <div class="path-wrap">
+      <div class="path-header">
+        <span>Flight path</span>
+        <span id="pathLegend" class="path-legend">
+          <span class="leg-dot S"></span> start
+          <span class="leg-dot E"></span> end
+          <span class="leg-dot LIVE"></span> drone (live)
+          <span class="leg-line LR"></span> sweep (s × speed)
+          <span class="leg-line UD"></span> climb (m)
+        </span>
+      </div>
+      <svg id="flightPath" class="flight-path" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Logs (last 200)</h2>
+    <pre class="log" id="logs"></pre>
+  </div>
+
+  <script>
+    (function () {
+      const url = 'ws://' + location.host + '/ws';
+      document.getElementById('wsUrl').textContent = url;
+
+      let msgs = 0;
+      const $ = id => document.getElementById(id);
+      const fmt = (n, d = 2) => (typeof n === 'number' && isFinite(n)) ? n.toFixed(d) : String(n);
+      const pill = (b) => `<span class="pill ${b ? 'on' : 'off'}">${b ? 'YES' : 'no'}</span>`;
+
+      function applyTelemetry(t) {
+        $('stateName').textContent = t.stateName;
+        $('currentTargetId').textContent = t.currentTargetId;
+        $('currentLevel').textContent = `${t.currentLevel + 1} / ${t.numLevels}`;
+        $('layout').textContent = `${t.totalMarkers} markers, ${t.numLevels} levels`;
+        $('isTracking').innerHTML = pill(t.isTracking);
+        $('isVSEnabled').innerHTML = pill(t.isVSEnabled);
+
+        $('detected').innerHTML = pill(t.detected);
+        $('offsetX').textContent = fmt(t.offsetX);
+        $('markerSize').textContent = fmt(t.markerSize, 0);
+        $('visibleIds').textContent = t.visibleIds || '—';
+        $('lastMarkerAgeSec').textContent = t.lastMarkerAgeSec >= 0 ? fmt(t.lastMarkerAgeSec) + 's' : '—';
+
+        $('rollPitchControlMode').textContent = t.rollPitchControlMode;
+        $('verticalControlMode').textContent = t.verticalControlMode;
+        $('rollDeg').textContent = fmt(t.rollDeg);
+        $('pitchMps').textContent = fmt(t.pitchMps);
+        // Unit varies by verticalControlMode (POSITION = m, VELOCITY = m/s)
+        $('verticalThrottleMps').textContent = fmt(t.verticalThrottleMps) +
+          (t.verticalControlMode === 'POSITION' ? ' m (target)' : ' m/s');
+        $('pumpTicks').textContent = t.pumpTicks;
+        $('inHoverLock').innerHTML = pill(t.inHoverLock);
+        $('inKick').innerHTML = pill(t.inKick);
+        $('inVerticalKick').innerHTML = pill(t.inVerticalKick);
+
+        $('pGain').textContent = fmt(t.pGain);
+        $('dGain').textContent = fmt(t.dGain);
+        $('sweepSpeedMps').textContent = fmt(t.sweepSpeedMps) + ' m/s';
+        $('climbSpeedMps').textContent = fmt(t.climbSpeedMps) + ' m/s';
+
+        $('altitudeM').textContent = fmt(t.altitudeM) + ' m';
+        $('heightLimitM').textContent = t.heightLimitM >= 0 ? (t.heightLimitM + ' m') : 'unread';
+        $('oaMode').textContent = t.oaMode;
+        $('nearestObstacleM').textContent = t.nearestObstacleM >= 0 ? fmt(t.nearestObstacleM) + ' m' : '—';
+        $('motorsOn').innerHTML = pill(t.motorsOn);
+        $('vpsDisabledByUs').innerHTML = pill(t.vpsDisabledByUs);
+        $('velocityXYZ').textContent =
+          `${fmt(t.velocityX)}, ${fmt(t.velocityY)}, ${fmt(t.velocityZ)} m/s`;
+
+        $('lastUpdate').textContent = new Date(t.lastUpdateMs).toLocaleTimeString();
+        $('serverPushCount').textContent = t.serverPushCount;
+      }
+
+      function applyLogs(logs) {
+        const out = logs.map(e => {
+          const ts = new Date(e.t).toLocaleTimeString();
+          return `<span class="ts">${ts}</span> <span class="l${e.l}">[${e.l}]</span> <span class="tag">${e.tag}</span> ${e.msg}`;
+        }).join('\n');
+        const pre = $('logs');
+        const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
+        pre.innerHTML = out;
+        if (atBottom) pre.scrollTop = pre.scrollHeight;
+      }
+
+      // ── Mission builder state (client-side only until "Run") ──
+      let pendingSteps = [];   // array of {action, seconds?, distance?}
+      let liveSteps    = [];   // what the server is currently executing
+      let liveCurrent  = -1;
+      let liveRunning  = false;
+      let socket       = null;
+      // Last mission the user sent for execution. Captured at Run-click so
+      // Retrace can rebuild the reverse-mirror path regardless of any local
+      // edits to pendingSteps after Run.
+      let lastExecutedSteps = null;
+
+      // Live tracker inputs (refreshed by telemetry, read by render loop).
+      let liveStepStartedMs    = 0;     // server-side wall clock when step began
+      let liveStepStartedLocal = 0;     // local clock when we LEARNED step began
+      let lastAltitudeM        = 0;     // for UP/DOWN interpolation
+      let missionStartAltitudeM = 0;    // captured when the mission begins;
+                                        // path Y is relative to THIS, so the
+                                        // live tracker uses (alt - start) as
+                                        // its vertical path coordinate.
+      let renderInterval       = null;  // setInterval handle for live re-render
+
+      // ── Simulation: drive the live tracker entirely client-side, no drone. ──
+      // Used to validate the dashboard's visuals (path coloring, drone dot
+      // motion, timeline progress) before flying.
+      let simulating         = false;   // when true, telemetry updates are ignored
+      let simInterval        = null;
+      let simStepStartedMs   = 0;
+      let simAltAtStepStart  = 0;
+      const SIM_VERTICAL_MPS = 0.5;     // matches the heuristic used elsewhere
+      const SIM_LAND_DURATION_MS = 6000;
+
+      // Retrace: invert each command in place, preserving order. LEFT↔RIGHT,
+      // UP↔DOWN, HOVER unchanged. Run from the drone's current position this
+      // sends it back through a mirrored sequence so each forward command is
+      // immediately cancelled out by its inverse.
+      function invertCommands(steps) {
+        return steps.map(s => {
+          if (s.action === 'LEFT')  return { action: 'RIGHT', seconds: s.seconds };
+          if (s.action === 'RIGHT') return { action: 'LEFT',  seconds: s.seconds };
+          if (s.action === 'UP')    return { action: 'DOWN',  distance: s.distance };
+          if (s.action === 'DOWN')  return { action: 'UP',    distance: s.distance };
+          /* HOVER */               return { action: 'HOVER', seconds: s.seconds };
+        });
+      }
+
+      function send(obj) {
+        try { socket && socket.readyState === 1 && socket.send(JSON.stringify(obj)); }
+        catch (_) {}
+      }
+
+      // Display string for a step.
+      function describeStep(s) {
+        if (s.action === 'LAND') return 'LAND';
+        if (s.action === 'UP' || s.action === 'DOWN') return `${s.action} ${s.distance.toFixed(2)}m`;
+        return `${s.action} ${s.seconds.toFixed(1)}s`;
+      }
+
+      // Heuristic display seconds — used for proportional timeline blocks.
+      // UP/DOWN are FC-paced so we estimate from distance / ~0.5 m/s.
+      // LAND is a terminal action; ~6 s rough block size.
+      function stepDisplaySeconds(s) {
+        if (s.action === 'LAND') return 6;
+        if (s.action === 'UP' || s.action === 'DOWN') return Math.max(0.5, s.distance / 0.5);
+        return s.seconds;
+      }
+
+      function renderQueue() {
+        const list = $('missionList');
+        list.innerHTML = '';
+        pendingSteps.forEach((s, i) => {
+          const li = document.createElement('li');
+          const span = document.createElement('span');
+          span.textContent = `${i + 1}. ${describeStep(s)}`;
+          const del = document.createElement('button');
+          del.className = 'del';
+          del.textContent = '×';
+          del.title = 'Remove step';
+          del.onclick = () => { pendingSteps.splice(i, 1); renderQueue(); };
+          li.appendChild(span); li.appendChild(del);
+          list.appendChild(li);
+        });
+        renderTimeline();
+        renderFlightPath();
+      }
+
+      // ── Flight-path whiteboard (SVG) ──
+      // Each step displaces the cursor:
+      //   LEFT  N s  → x -= N * sweepSpeed
+      //   RIGHT N s  → x += N * sweepSpeed
+      //   UP    M m  → y += M       (y grows UP in path coords; flipped for SVG)
+      //   DOWN  M m  → y -= M
+      //   HOVER N s  → no displacement, drawn as a small loop
+      // The whiteboard auto-fits to the path's bounding box, with grid lines
+      // every 0.5 m.
+      let lastSweepSpeed = 0.15;   // updated from telemetry
+
+      function stepToDxDy(s) {
+        if (s.action === 'LEFT')  return { dx: -s.seconds * lastSweepSpeed, dy: 0, type: 'LR' };
+        if (s.action === 'RIGHT') return { dx:  s.seconds * lastSweepSpeed, dy: 0, type: 'LR' };
+        if (s.action === 'UP')    return { dx: 0, dy:  s.distance,           type: 'UD' };
+        if (s.action === 'DOWN')  return { dx: 0, dy: -s.distance,           type: 'UD' };
+        if (s.action === 'LAND')  return { dx: 0, dy: 0, type: 'LAND' };
+        return { dx: 0, dy: 0, type: 'HOVER' };
+      }
+
+      function computePathPoints(steps) {
+        const pts = [{ x: 0, y: 0, step: null }];
+        let x = 0, y = 0;
+        steps.forEach(s => {
+          const d = stepToDxDy(s);
+          x += d.dx; y += d.dy;
+          pts.push({ x, y, step: s, type: d.type });
+        });
+        return pts;
+      }
+
+      function renderFlightPath() {
+        const svg = $('flightPath');
+        // While running, mirror the server's authoritative steps; otherwise the
+        // user's pending build.
+        const steps = liveRunning ? liveSteps : pendingSteps;
+        svg.innerHTML = '';
+
+        if (steps.length === 0) {
+          svg.setAttribute('viewBox', '0 0 200 100');
+          const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+          t.setAttribute('class', 'empty-msg');
+          t.setAttribute('x', '100'); t.setAttribute('y', '52');
+          t.textContent = 'no flight path — add steps to plot';
+          svg.appendChild(t);
+          return;
+        }
+
+        const pts = computePathPoints(steps);
+        let minX = 0, maxX = 0, minY = 0, maxY = 0;
+        pts.forEach(p => {
+          minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+          minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+        });
+        const padX = Math.max(0.3, (maxX - minX) * 0.15);
+        const padY = Math.max(0.3, (maxY - minY) * 0.15);
+        minX -= padX; maxX += padX; minY -= padY; maxY += padY;
+        // SVG y grows downward — flip so path "up" looks up.
+        // viewBox in world coords (meters): x left→right, y top→bottom (already flipped)
+        const vbW = Math.max(0.5, maxX - minX);
+        const vbH = Math.max(0.5, maxY - minY);
+        // Use a scaled viewBox so labels remain readable (target ~ 600 wide).
+        const SCALE = 100;   // 1 m = 100 svg units (good size for stroke/labels)
+        const vbX = minX * SCALE;
+        const vbY = -maxY * SCALE;   // flip
+        svg.setAttribute('viewBox', `${vbX} ${vbY} ${vbW * SCALE} ${vbH * SCALE}`);
+
+        const ns = 'http://www.w3.org/2000/svg';
+        const fmt = (n) => n.toFixed(2) + 'm';
+
+        // Grid lines every 0.5 m
+        const gridStep = 0.5;
+        const gx0 = Math.floor(minX / gridStep) * gridStep;
+        const gy0 = Math.floor(minY / gridStep) * gridStep;
+        for (let gx = gx0; gx <= maxX + 1e-6; gx += gridStep) {
+          const line = document.createElementNS(ns, 'line');
+          line.setAttribute('class', Math.abs(gx) < 1e-6 ? 'axis' : 'grid');
+          line.setAttribute('x1', gx * SCALE); line.setAttribute('x2', gx * SCALE);
+          line.setAttribute('y1', -minY * -SCALE); line.setAttribute('y2', -maxY * SCALE);
+          svg.appendChild(line);
+        }
+        for (let gy = gy0; gy <= maxY + 1e-6; gy += gridStep) {
+          const line = document.createElementNS(ns, 'line');
+          line.setAttribute('class', Math.abs(gy) < 1e-6 ? 'axis' : 'grid');
+          line.setAttribute('x1', minX * SCALE); line.setAttribute('x2', maxX * SCALE);
+          line.setAttribute('y1', -gy * SCALE); line.setAttribute('y2', -gy * SCALE);
+          svg.appendChild(line);
+        }
+
+        // Segments — each step renders as a line/circle plus a label. While a
+        // mission is running, the segment gets a progress-state class:
+        //   done:     opacity 0.35 (faded back)
+        //   current:  bright orange + glow + pulse (THE progress indicator)
+        //   upcoming: opacity 0.25 + dashed (de-emphasized future)
+        // While idle/building, no progress class — full normal styling.
+        function progressClass(stepIdx) {
+          if (!liveRunning) return '';
+          if (stepIdx <  liveCurrent) return ' progress-done';
+          if (stepIdx === liveCurrent) return ' progress-current';
+          return ' progress-upcoming';
+        }
+
+        for (let i = 1; i < pts.length; i++) {
+          const p0 = pts[i - 1], p1 = pts[i];
+          const type = p1.type || 'HOVER';
+          const stepIdx = i - 1;
+          const pcls = progressClass(stepIdx);
+          if (type === 'HOVER') {
+            const circle = document.createElementNS(ns, 'circle');
+            circle.setAttribute('cx', p0.x * SCALE);
+            circle.setAttribute('cy', -p0.y * SCALE);
+            circle.setAttribute('r', 8 + (p1.step?.seconds || 0) * 2);
+            circle.setAttribute('fill', 'none');
+            circle.setAttribute('class', 'seg-HOVER' + pcls);
+            svg.appendChild(circle);
+          } else if (type === 'LAND') {
+            // LAND: red "landing pad" square at p0, no spatial displacement.
+            const SZ = 14;
+            const rect = document.createElementNS(ns, 'rect');
+            rect.setAttribute('x', p0.x * SCALE - SZ / 2);
+            rect.setAttribute('y', -p0.y * SCALE - SZ / 2);
+            rect.setAttribute('width', SZ);
+            rect.setAttribute('height', SZ);
+            rect.setAttribute('class', 'seg-LAND' + pcls);
+            svg.appendChild(rect);
+          } else {
+            const line = document.createElementNS(ns, 'line');
+            line.setAttribute('x1', p0.x * SCALE);
+            line.setAttribute('y1', -p0.y * SCALE);
+            line.setAttribute('x2', p1.x * SCALE);
+            line.setAttribute('y2', -p1.y * SCALE);
+            line.setAttribute('class', 'seg-' + type + pcls);
+            svg.appendChild(line);
+          }
+          // Segment label at midpoint, faded with the segment's progress state.
+          const label = document.createElementNS(ns, 'text');
+          label.setAttribute('class', 'seg-label' + pcls);
+          label.setAttribute('x', ((p0.x + p1.x) / 2) * SCALE);
+          label.setAttribute('y', -((p0.y + p1.y) / 2) * SCALE - 6);
+          label.textContent = describeStep(p1.step);
+          svg.appendChild(label);
+        }
+
+        // Start dot
+        const start = document.createElementNS(ns, 'circle');
+        start.setAttribute('class', 'dot-start');
+        start.setAttribute('cx', pts[0].x * SCALE);
+        start.setAttribute('cy', -pts[0].y * SCALE);
+        start.setAttribute('r', 6);
+        svg.appendChild(start);
+
+        // End dot (only if not at start)
+        const endP = pts[pts.length - 1];
+        if (Math.abs(endP.x) > 1e-3 || Math.abs(endP.y) > 1e-3) {
+          const end = document.createElementNS(ns, 'circle');
+          end.setAttribute('class', 'dot-end');
+          end.setAttribute('cx', endP.x * SCALE);
+          end.setAttribute('cy', -endP.y * SCALE);
+          end.setAttribute('r', 5);
+          svg.appendChild(end);
+        }
+
+        // Live drone indicator — interpolated position within the current step.
+        // LEFT/RIGHT/HOVER use local-clock elapsed/duration; UP/DOWN snap to
+        // the FC's reported altitude clamped to the step's vertical range.
+        if (liveRunning && liveCurrent >= 0 && liveCurrent < pts.length - 1) {
+          const step = liveSteps[liveCurrent];
+          const p0   = pts[liveCurrent];
+          const p1   = pts[liveCurrent + 1];
+          let lx = p0.x, ly = p0.y;
+          if (step) {
+            if (step.action === 'UP' || step.action === 'DOWN') {
+              // Convert absolute altitude to path-Y (mission-relative) before
+              // clamping to the segment's vertical span. Without this offset
+              // we'd be comparing meters-above-takeoff to meters-since-mission-
+              // start and the dot would snap to one end of the segment.
+              const lo = Math.min(p0.y, p1.y);
+              const hi = Math.max(p0.y, p1.y);
+              const pathY = lastAltitudeM - missionStartAltitudeM;
+              ly = Math.min(Math.max(pathY, lo), hi);
+              lx = p0.x;
+            } else if (step.action === 'HOVER' || step.action === 'LAND') {
+              lx = p0.x; ly = p0.y;
+            } else {
+              // LEFT / RIGHT — time-based interpolation.
+              const elapsedMs = Date.now() - liveStepStartedLocal;
+              const durationMs = (step.seconds || 0) * 1000;
+              const u = durationMs > 0
+                ? Math.min(1, Math.max(0, elapsedMs / durationMs))
+                : 1;
+              lx = p0.x + u * (p1.x - p0.x);
+              ly = p0.y + u * (p1.y - p0.y);
+            }
+          }
+          const drone = document.createElementNS(ns, 'circle');
+          drone.setAttribute('class', 'live-drone');
+          drone.setAttribute('cx', lx * SCALE);
+          drone.setAttribute('cy', -ly * SCALE);
+          drone.setAttribute('r', 6);
+          svg.appendChild(drone);
+        }
+      }
+
+      function renderTimeline() {
+        const tl = $('timeline');
+        tl.innerHTML = '';
+        // While running, show the server's authoritative mission; otherwise
+        // show what's being built.
+        const steps = liveRunning ? liveSteps : pendingSteps;
+        const total = steps.reduce((acc, s) => acc + stepDisplaySeconds(s), 0);
+        if (total <= 0) return;
+        steps.forEach((s, i) => {
+          const pct = (stepDisplaySeconds(s) / total) * 100;
+          const blk = document.createElement('div');
+          // Progress class (done / current / upcoming) only while a mission
+          // is running; idle/build view leaves blocks at their default style.
+          let progressCls = '';
+          if (liveRunning) {
+            if (i <  liveCurrent) progressCls = ' progress-done';
+            else if (i === liveCurrent) progressCls = ' progress-current';
+            else progressCls = ' progress-upcoming';
+          }
+          blk.className = `blk ${s.action}${progressCls}`;
+          blk.style.width = pct + '%';
+          blk.textContent = pct >= 6 ? describeStep(s) : s.action[0];
+          blk.title = describeStep(s);
+          tl.appendChild(blk);
+        });
+      }
+
+      function renderMissionList(activeIdx) {
+        const list = $('missionList');
+        if (!liveRunning) return;   // pending list rendering already done
+        list.innerHTML = '';
+        liveSteps.forEach((s, i) => {
+          const li = document.createElement('li');
+          if (i === activeIdx) li.className = 'active';
+          li.textContent = `${i + 1}. ${describeStep(s)}` + (i === activeIdx ? '  ◀ running' : '');
+          list.appendChild(li);
+        });
+      }
+
+      // Hide the value input when LAND is selected — it doesn't take one.
+      function syncValueInput() {
+        const isLand = $('missionAction').value === 'LAND';
+        $('missionValue').style.visibility = isLand ? 'hidden' : '';
+      }
+      $('missionAction').onchange = syncValueInput;
+      syncValueInput();
+
+      $('btnAdd').onclick = () => {
+        const action = $('missionAction').value;
+        if (action === 'LAND') {
+          pendingSteps.push({ action: 'LAND' });
+          renderQueue();
+          return;
+        }
+        const v = parseFloat($('missionValue').value);
+        if (!isFinite(v) || v <= 0) return;
+        const step = { action };
+        if (action === 'UP' || action === 'DOWN') step.distance = v;
+        else                                       step.seconds  = v;
+        pendingSteps.push(step);
+        renderQueue();
+      };
+      $('btnClear').onclick = () => { pendingSteps = []; renderQueue(); };
+      // Retrace: replay the last-run mission in reverse so the drone follows
+      // its just-completed flight path back to the original start point.
+      // Requires that a mission has been run during this session; the queue
+      // itself is left untouched.
+      $('btnRetrace').onclick = () => {
+        if (liveRunning) return;   // Stop first if a mission is still running.
+        if (!lastExecutedSteps || lastExecutedSteps.length === 0) return;
+        const inverted = invertCommands(lastExecutedSteps);
+        // Cache the inverted version so pressing Retrace twice flips back —
+        // useful for shuttle-style testing.
+        lastExecutedSteps = inverted;
+        send({ cmd: 'runMission', steps: inverted, loop: false });
+      };
+      $('btnRun').onclick = () => {
+        if (pendingSteps.length === 0) return;
+        // Capture for later Retrace.
+        lastExecutedSteps = pendingSteps.slice();
+        send({ cmd: 'runMission', steps: pendingSteps, loop: $('chkLoop').checked });
+      };
+      $('btnStop').onclick = () => {
+        if (simulating) { stopSimulation(); return; }
+        send({ cmd: 'stopMission' });
+      };
+
+      // ── Pure-browser simulation ──
+      // Same plumbing the real telemetry path uses, but the dashboard itself
+      // generates the live state. Useful for iterating on visuals without a
+      // drone and without the phone needing to be connected.
+      $('btnSimulate').onclick = () => {
+        if (liveRunning || simulating) return;
+        if (pendingSteps.length === 0) return;
+        startSimulation(pendingSteps);
+      };
+
+      function simStepDurationMs(s) {
+        if (s.action === 'LEFT' || s.action === 'RIGHT' || s.action === 'HOVER')
+          return (s.seconds || 0) * 1000;
+        if (s.action === 'UP' || s.action === 'DOWN')
+          return ((s.distance || 0) / SIM_VERTICAL_MPS) * 1000;
+        if (s.action === 'LAND') return SIM_LAND_DURATION_MS;
+        return 0;
+      }
+
+      function startSimulation(steps) {
+        simulating = true;
+        liveSteps = steps.slice();
+        liveCurrent = 0;
+        liveRunning = true;
+        // For consistency with the real telemetry path:
+        missionStartAltitudeM = lastAltitudeM;
+        simAltAtStepStart = lastAltitudeM;
+        liveStepStartedLocal = Date.now();
+        simStepStartedMs = Date.now();
+        // Start render loop (in case it wasn't already running from real telemetry).
+        if (!renderInterval) renderInterval = setInterval(renderFlightPath, 100);
+        // Tick the simulator at 20 Hz so altitude interpolation is smooth.
+        if (!simInterval) simInterval = setInterval(simulationTick, 50);
+        $('btnRun').disabled     = true;
+        $('btnStop').disabled    = false;
+        $('btnSimulate').disabled = true;
+        $('btnRetrace').disabled = true;
+        renderTimeline();
+        renderFlightPath();
+      }
+
+      function simulationTick() {
+        if (!simulating) return;
+        const step = liveSteps[liveCurrent];
+        if (!step) { stopSimulation(); return; }
+        const now = Date.now();
+        const elapsed = now - simStepStartedMs;
+        const dur = simStepDurationMs(step);
+
+        // Update simulated altitude for UP/DOWN/LAND in real time so the live
+        // tracker's altitude-based interpolation shows movement.
+        if (step.action === 'UP' || step.action === 'DOWN') {
+          const u = dur > 0 ? Math.min(1, elapsed / dur) : 1;
+          const sign = step.action === 'UP' ? 1 : -1;
+          lastAltitudeM = simAltAtStepStart + sign * (step.distance || 0) * u;
+        } else if (step.action === 'LAND') {
+          const u = dur > 0 ? Math.min(1, elapsed / dur) : 1;
+          lastAltitudeM = simAltAtStepStart * (1 - u);
+        }
+
+        // Status reflects mission-level simulating tag.
+        $('missionStatus').textContent =
+          `simulating — step ${liveCurrent + 1}/${liveSteps.length}`;
+
+        if (elapsed >= dur) {
+          // Advance to next step (or finish).
+          liveCurrent++;
+          simStepStartedMs = now;
+          liveStepStartedLocal = now;
+          simAltAtStepStart = lastAltitudeM;
+          if (liveCurrent >= liveSteps.length || step.action === 'LAND') {
+            stopSimulation();
+          }
+        }
+      }
+
+      function stopSimulation() {
+        if (!simulating) return;
+        simulating = false;
+        liveRunning = false;
+        liveCurrent = -1;
+        liveSteps = [];
+        if (simInterval) { clearInterval(simInterval); simInterval = null; }
+        if (renderInterval) { clearInterval(renderInterval); renderInterval = null; }
+        $('missionStatus').textContent = 'idle';
+        $('btnRun').disabled     = false;
+        $('btnStop').disabled    = true;
+        $('btnSimulate').disabled = false;
+        $('btnRetrace').disabled = !lastExecutedSteps;
+        renderTimeline();
+        renderQueue();
+        renderFlightPath();
+      }
+
+      // Flight-control buttons (top bar)
+      $('btnTakeoff').onclick   = () => send({ cmd: 'takeoff'   });
+      $('btnLand').onclick      = () => send({ cmd: 'land'      });
+      $('btnEnableVS').onclick  = () => send({ cmd: 'enableVS'  });
+      $('btnDisableVS').onclick = () => send({ cmd: 'disableVS' });
+
+      function applyMissionTelemetry(t) {
+        // While simulating, the dashboard owns liveRunning/liveCurrent/etc.
+        // Skip server-driven updates so it doesn't overwrite our fake state.
+        if (simulating) return;
+        // Keep flight-path scale in sync with the drone's actual sweep speed.
+        if (typeof t.sweepSpeedMps === 'number' && t.sweepSpeedMps > 0) {
+          lastSweepSpeed = t.sweepSpeedMps;
+        }
+        if (typeof t.altitudeM === 'number') lastAltitudeM = t.altitudeM;
+        const wasRunning = liveRunning;
+        const prevStep = liveCurrent;
+        liveRunning = !!t.missionRunning;
+        liveCurrent = (typeof t.missionCurrentStep === 'number') ? t.missionCurrentStep : -1;
+        // Re-anchor the local "step started" clock whenever the step index
+        // advances or a new mission begins. Using a local timestamp avoids
+        // clock-skew issues between the phone and the browser.
+        if (liveRunning && (!wasRunning || liveCurrent !== prevStep)) {
+          liveStepStartedMs    = t.missionStepStartedMs || Date.now();
+          liveStepStartedLocal = Date.now();
+        }
+        // Snapshot the FC's altitude at mission start so UP/DOWN tracking can
+        // map absolute altitude → path-Y (path is mission-relative; 0 = start).
+        if (liveRunning && !wasRunning) {
+          missionStartAltitudeM = lastAltitudeM;
+        }
+        // Drive a 10 Hz render loop while running so the live indicator
+        // moves smoothly between telemetry pushes (which only arrive at 5 Hz).
+        if (liveRunning && !renderInterval) {
+          renderInterval = setInterval(renderFlightPath, 100);
+        } else if (!liveRunning && renderInterval) {
+          clearInterval(renderInterval); renderInterval = null;
+        }
+        // The Kotlin field is named *Json but it's appended verbatim into the
+        // outer JSON, so JS sees an actual array. Be defensive in case the
+        // shape changes later.
+        const raw = t.missionStepsJson;
+        if (Array.isArray(raw)) liveSteps = raw;
+        else if (typeof raw === 'string') {
+          try { liveSteps = JSON.parse(raw); } catch (_) { liveSteps = []; }
+        } else liveSteps = [];
+        const loopTag = (liveRunning && t.missionLoop) ? ' [loop]' : '';
+        $('missionStatus').textContent = liveRunning
+          ? `running — step ${liveCurrent + 1}/${liveSteps.length}${loopTag}`
+          : 'idle';
+        $('btnRun').disabled     = liveRunning;
+        $('btnStop').disabled    = !liveRunning;
+        $('btnRetrace').disabled = liveRunning || !lastExecutedSteps;
+        if (liveRunning) renderMissionList(liveCurrent);
+        renderTimeline();
+        renderFlightPath();
+        if (!liveRunning) renderQueue();   // re-show pending after run ends
+      }
+
+      // Patch into the existing telemetry-apply path: it's defined inside
+      // connect()'s scope below, so we expose this function as a global.
+      window._applyMissionTelemetry = applyMissionTelemetry;
+
+      function connect() {
+        const ws = new WebSocket(url);
+        socket = ws;
+        ws.onopen = () => {
+          $('conn').className = 'status live';
+          $('conn').textContent = 'live';
+        };
+        ws.onclose = () => {
+          $('conn').className = 'status dead';
+          $('conn').textContent = 'offline';
+          setTimeout(connect, 1500);
+        };
+        ws.onerror = () => { try { ws.close(); } catch (_) {} };
+        ws.onmessage = (ev) => {
+          msgs++;
+          $('msgs').textContent = msgs;
+          try {
+            const data = JSON.parse(ev.data);
+            if (data.telemetry) {
+              applyTelemetry(data.telemetry);
+              applyMissionTelemetry(data.telemetry);
+              $('pushes').textContent = data.telemetry.serverPushCount;
+            }
+            if (data.logs) applyLogs(data.logs);
+          } catch (e) { /* ignore */ }
+        };
+      }
+      renderQueue();   // show empty-state messages immediately
+      connect();
+    })();
+  </script>
+</body>
+</html>
