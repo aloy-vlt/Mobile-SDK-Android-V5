@@ -16,6 +16,11 @@ import android.widget.EditText
 import androidx.fragment.app.activityViewModels
 import dji.sampleV5.aircraft.R
 import dji.sampleV5.aircraft.models.BasicAircraftControlVM
+import dji.sampleV5.aircraft.rackscan.MissionExecutor
+import dji.sampleV5.aircraft.rackscan.MissionStep
+import dji.sampleV5.aircraft.rackscan.RackScanDashboardServer
+import dji.sampleV5.aircraft.rackscan.RackScanLogBuffer
+import dji.sampleV5.aircraft.rackscan.RackScanTelemetry
 import dji.sampleV5.aircraft.models.VirtualStickVM
 import dji.sampleV5.aircraft.util.ToastUtils
 import dji.sdk.keyvalue.value.common.ComponentIndexType
@@ -25,8 +30,14 @@ import dji.sdk.keyvalue.value.flightcontroller.RollPitchControlMode
 import dji.sdk.keyvalue.value.flightcontroller.VerticalControlMode
 import dji.sdk.keyvalue.value.flightcontroller.YawControlMode
 import dji.sdk.keyvalue.value.flightcontroller.VirtualStickFlightControlParam
+import dji.sdk.keyvalue.key.FlightControllerKey
+import dji.sdk.keyvalue.key.KeyTools
 import dji.v5.common.callback.CommonCallbacks
 import dji.v5.common.error.IDJIError
+import dji.v5.et.create
+import dji.v5.et.get
+import dji.v5.et.listen
+import dji.v5.manager.KeyManager
 import dji.v5.manager.aircraft.perception.PerceptionManager
 import dji.v5.manager.aircraft.perception.data.ObstacleAvoidanceType
 import dji.v5.manager.aircraft.perception.data.ObstacleData
@@ -74,16 +85,34 @@ class ArucoFollowFragment : DJIFragment() {
         private const val KICK_RATIO       = 0.25f   // min ratio (≈3.75° tilt)
         private const val KICK_DURATION_MS = 300L
 
-        private const val CLIMB_SPEED_MPS      = 0.3f
         private const val SWEEP_CAPTURE_ZONE   = 0.55f   // normalised offset
         private const val CENTERING_MISS_TOL   = 5       // frames before hoverStick
         private const val OBSTACLE_WARN_M      = 1.5f
+
+        // Auto-descend after takeoff: drone hovers at ~1.2m default, we drop
+        // it to TARGET_TAKEOFF_HEIGHT for close-range rack scanning.
+        private const val TARGET_TAKEOFF_HEIGHT_M       = 0.50f
+        private const val TAKEOFF_DESCEND_SPEED_MPS     = 0.20f
+        private const val TAKEOFF_STABILIZE_MS          = 5000L
+        private const val TAKEOFF_DESCEND_TIMEOUT_MS    = 8000L
+        private const val ALT_TOLERANCE_M               = 0.05f
+
+        // FC altitude cap raised after takeoff, restored on exit.
+        private const val TARGET_HEIGHT_LIMIT_M         = 10
+
+        // Minimum duration in CLIMBING_UP/DOWN before the capture-zone check
+        // is allowed to fire. Without this, if currentTargetId happens to be
+        // a marker already in frame (e.g. the same-level partner), the climb
+        // ends on frame 1 and altitude barely changes.
+        private const val MIN_CLIMB_DURATION_MS         = 800L
+
     }
 
     enum class ScanState {
         IDLE, CENTERING, CENTERED,
         SWEEPING_LEFT, SWEEPING_RIGHT,
-        CLIMBING, FINE_TUNING, COMPLETE
+        CLIMBING_UP, CLIMBING_DOWN, FINE_TUNING, COMPLETE,
+        TAKEOFF_DESCENDING
     }
 
     private val basicAircraftControlVM: BasicAircraftControlVM by activityViewModels()
@@ -100,7 +129,7 @@ class ArucoFollowFragment : DJIFragment() {
     private lateinit var seekPGain: SeekBar
     private lateinit var seekDGain: SeekBar
     private lateinit var seekSweepSpeed: SeekBar
-    private lateinit var seekClimbHeight: SeekBar
+    private lateinit var seekClimbSpeed: SeekBar
     private lateinit var btnTakeOff: Button
     private lateinit var btnEnableVS: Button
     private lateinit var btnLand: Button
@@ -108,6 +137,7 @@ class ArucoFollowFragment : DJIFragment() {
     private lateinit var btnGoLeft: Button
     private lateinit var btnGoRight: Button
     private lateinit var btnGoUp: Button
+    private lateinit var btnGoDown: Button
     private lateinit var btnStop: Button
     private lateinit var btnOaBrake: Button
     private lateinit var btnOaBypass: Button
@@ -136,10 +166,42 @@ class ArucoFollowFragment : DJIFragment() {
     // tracker silently ignores commands below ~0.10 m/s, so that's the floor.
     private var sweepSpeedMps = 0.15f   // 0.10–0.40 m/s in 0.05 steps
 
-    // Climb
-    private var climbHeight    = 0.5f
+    // Climb is now POSITION-mode: we capture altitude at climb-start and send
+    // an absolute target altitude ±climbDistanceM. The FC's position controller
+    // is a separate loop from the velocity tracker that swallowed our prior
+    // m/s commands. The "slider" is now distance per press, not speed.
+    // Default matches the user's rack: 50 cm between levels (and 50 cm between
+    // same-level markers, but that's handled by sweep speed, not this value).
+    private var climbDistanceM = 0.5f   // 0.50–2.00 m in 0.25 m steps
+    // Kept around for telemetry display (and in case a future change goes back
+    // to VELOCITY mode) — currently unused by the pump.
+    private var climbSpeedMps = 0.30f
+    // Captured at startClimb so the absolute target is stable for the duration
+    // of the climb (otherwise the moving currentAltitudeM would shift the goal
+    // post and the drone would never settle).
+    @Volatile private var climbStartAltitudeM: Double = 0.0
+
+    // Climb start time (for safety-timeout watchdog only; no fixed duration)
     private var climbStartTime = 0L
-    private var climbDurationMs = 0L
+
+    // Live altitude (m), updated by KeyAltitude listener
+    @Volatile private var currentAltitudeM: Double = 0.0
+    private var takeoffDescendStartMs: Long = 0L
+
+    // FC max-altitude cap. The fragment raises it to TARGET_HEIGHT_LIMIT_M
+    // for the duration of the scan so UP isn't blocked at the user's default
+    // safety cap (often 1–2m in Pilot for indoor flying), then restores the
+    // prior value in onDestroyView. `originalHeightLimit = null` means we
+    // haven't read/changed it yet (so don't try to restore).
+    private var originalHeightLimit: Int? = null
+
+    // Dashboard server (interactive telemetry+mission UI at http://<phone>:8082)
+    private val telemetry = RackScanTelemetry()
+    private val logBuffer = RackScanLogBuffer()
+    private var dashboardServer: RackScanDashboardServer? = null
+    private val missionExecutor: MissionExecutor by lazy {
+        MissionExecutor(missionHost, telemetry, logBuffer)
+    }
 
     // Sweep leg tracking
     private var sweepTargetAdvanced  = false
@@ -150,10 +212,12 @@ class ArucoFollowFragment : DJIFragment() {
     private var movementStartTime    = 0L
     private var safetyStopTriggered  = false
 
-    // ── ANGLE MODE TARGETS (written by frame thread, read by pump thread) ──
-    // Single roll target covers all states: PD centering values AND sweep angles.
-    @Volatile private var targetRollDeg: Float   = 0f
-    @Volatile private var targetThrottleMps: Float = 0f
+    // ── PUMP TARGETS (written by frame thread, read by pump thread) ──
+    // targetRollDeg drives ANGLE-mode lateral correction during CENTERING /
+    // FINE_TUNING. Vertical throttle is derived from `state` directly in the
+    // pump (CLIMBING_UP / CLIMBING_DOWN / TAKEOFF_DESCENDING), so there's no
+    // separate throttle field to keep in sync.
+    @Volatile private var targetRollDeg: Float = 0f
 
     // Kickstart state (shared by centering, fine-tuning, and sweep)
     @Volatile private var inHoverLock: Boolean = true
@@ -224,6 +288,47 @@ class ArucoFollowFragment : DJIFragment() {
         catch (_: Throwable) {}
         try { PerceptionManager.getInstance().addPerceptionInformationListener(perceptionInfoListener) }
         catch (_: Throwable) {}
+        // Dashboard: starts a tiny WS server on port 8082 streaming telemetry
+        // and the log ring buffer. Browse to http://<phone-ip>:8082 to inspect.
+        try {
+            dashboardServer = RackScanDashboardServer(
+                port = RackScanDashboardServer.DEFAULT_PORT,
+                appContext = requireContext().applicationContext,
+                telemetry = telemetry,
+                logs = logBuffer,
+            ).also {
+                it.commandHandler = dashboardCommandHandler
+                it.start()
+            }
+            logBuffer.i(TAG, "Dashboard server up at port ${RackScanDashboardServer.DEFAULT_PORT}")
+        } catch (t: Throwable) {
+            Log.w(TAG, "Dashboard server failed to start: ${t.message}")
+        }
+        try {
+            FlightControllerKey.KeyAltitude.create().listen(this) { alt: Double? ->
+                val a = alt ?: return@listen
+                currentAltitudeM = a
+                if (state == ScanState.TAKEOFF_DESCENDING && a <= TARGET_TAKEOFF_HEIGHT_M + ALT_TOLERANCE_M) {
+                    mainHandler.post { onTakeoffDescentComplete() }
+                }
+            }
+        } catch (_: Throwable) {}
+        try {
+            FlightControllerKey.KeyAircraftVelocity.create().listen(this) { v ->
+                v?.let {
+                    telemetry.velocityX = it.x
+                    telemetry.velocityY = it.y
+                    telemetry.velocityZ = it.z
+                }
+            }
+        } catch (_: Throwable) {}
+        try {
+            FlightControllerKey.KeyAreMotorsOn.create().listen(this) { on ->
+                if (on != null) telemetry.motorsOn = on
+            }
+        } catch (_: Throwable) {}
+        // raiseHeightLimitForScan() runs on takeoff success — the read needs
+        // a connected drone, which isn't guaranteed at view-created time.
     }
 
     // ── VS state observer: detect external kills, don't nuke scan state ──
@@ -247,47 +352,56 @@ class ArucoFollowFragment : DJIFragment() {
     // ═══════════════════════════════════════════════════════════════════
     // 20 Hz STICK PUMP — HYBRID MODE
     //
-    // Centering / Fine-tuning → ANGLE mode (BODY frame).
-    //   Each frame, computeRollAngle(realOffsetX) writes targetRollDeg. The
-    //   pump sends that with the shared kickstart for sub-KICK_RATIO outputs.
-    //   This is the path proven by the Dashboard's aruco loop — short
-    //   corrections in a closed loop where offsetX naturally varies.
+    // Centering / Fine-tuning → ANGLE mode (BODY frame), roll = PD output.
     //
-    // Sweeping → VELOCITY mode (BODY frame).
-    //   ANGLE mode with a constant attitude command fights the FC's position-
-    //   hold outer loop (drone moves a bit, FC counter-tilts, drone stalls).
-    //   VELOCITY mode tells the FC to *travel* at sweepSpeedMps and the FC
-    //   handles attitude internally, including overriding position-hold.
-    //   This is the API DJI tuned for sustained directional motion.
+    // Sweeping LEFT / RIGHT → VELOCITY mode (BODY frame), pitch = ±sweepSpeed.
+    //   (Roll-axis name → forward velocity in VELOCITY mode; pitch-axis name
+    //   → lateral velocity. That's DJI's naming for V5.)
     //
-    // Climbing → ANGLE roll = 0, verticalThrottle = CLIMB_SPEED_MPS.
+    // Climbing UP / DOWN → ANGLE roll/pitch = 0, verticalThrottle = ±climbSpeed.
+    //
+    // Takeoff descent → ANGLE roll/pitch = 0, verticalThrottle = -descend speed
+    //   until KeyAltitude listener drops below TARGET_TAKEOFF_HEIGHT.
     // ═══════════════════════════════════════════════════════════════════
 
     private fun startCommandLoop() {
         commandTimer = Timer("StickPump", true)
         commandTimer?.scheduleAtFixedRate(object : TimerTask() {
             override fun run() {
-                if (!isVSEnabled) return
-                if (state == ScanState.IDLE || state == ScanState.COMPLETE) return
-
                 val now = System.currentTimeMillis()
+                if (!isVSEnabled || state == ScanState.IDLE || state == ScanState.COMPLETE) {
+                    // Dashboard still wants the latest state/altitude/etc.
+                    // even when we're not commanding the FC.
+                    publishCommonTelemetry(now)
+                    return
+                }
                 val isSweeping = state == ScanState.SWEEPING_LEFT ||
                                  state == ScanState.SWEEPING_RIGHT
+                // Vertical control split: POSITION mode for code-driven climbs
+                // (FC's position controller bypasses the velocity-tracker filter
+                // that was swallowing our m/s commands); VELOCITY mode for the
+                // takeoff auto-descent (which empirically works) and for hover
+                // when no vertical motion is wanted.
+                val useVerticalPosition = state == ScanState.CLIMBING_UP ||
+                                          state == ScanState.CLIMBING_DOWN
+                val verticalMode: VerticalControlMode =
+                    if (useVerticalPosition) VerticalControlMode.POSITION
+                    else VerticalControlMode.VELOCITY
+                val verticalCommand: Double = when (state) {
+                    ScanState.CLIMBING_UP        -> climbStartAltitudeM + climbDistanceM
+                    ScanState.CLIMBING_DOWN      -> (climbStartAltitudeM - climbDistanceM).coerceAtLeast(0.3)
+                    ScanState.TAKEOFF_DESCENDING -> -TAKEOFF_DESCEND_SPEED_MPS.toDouble()
+                    else                         -> 0.0
+                }
 
                 try {
                     val param = VirtualStickFlightControlParam().apply {
                         rollPitchCoordinateSystem = FlightCoordinateSystem.BODY
                         yawControlMode            = YawControlMode.ANGULAR_VELOCITY
-                        verticalControlMode       = VerticalControlMode.VELOCITY
+                        verticalControlMode       = verticalMode
                         yaw                       = 0.0
-                        verticalThrottle          = targetThrottleMps.toDouble()
+                        verticalThrottle          = verticalCommand
                         if (isSweeping) {
-                            // DJI MSDK V5 convention: in VELOCITY mode, `pitch`
-                            // and `roll` are linear velocities ALONG the named
-                            // axis. Roll axis is longitudinal (fwd/back), pitch
-                            // axis is lateral (left/right). So lateral motion
-                            // is driven via `pitch`, not `roll` — opposite of
-                            // ANGLE-mode where `roll` is body-roll attitude.
                             rollPitchControlMode = RollPitchControlMode.VELOCITY
                             val dir = if (state == ScanState.SWEEPING_RIGHT) 1.0 else -1.0
                             pitch = sweepSpeedMps.toDouble() * dir
@@ -313,20 +427,41 @@ class ArucoFollowFragment : DJIFragment() {
                     }
                     VirtualStickManager.getInstance().sendVirtualStickAdvancedParam(param)
                     pumpTicks.incrementAndGet()
+
+                    // Dashboard publish — capture pump output for inspection.
+                    telemetry.rollPitchControlMode = if (isSweeping) "VELOCITY" else "ANGLE"
+                    telemetry.verticalControlMode  = verticalMode.name
+                    telemetry.rollDeg              = param.roll
+                    telemetry.pitchMps             = param.pitch
+                    telemetry.verticalThrottleMps  = param.verticalThrottle
+                    telemetry.pumpTicks            = pumpTicks.get()
+                    telemetry.inHoverLock          = inHoverLock
+                    telemetry.inKick               = now < kickEndsAtMs
+                    // Vertical kick no longer applies — POSITION mode doesn't
+                    // pulse magnitudes. Pinned to false for UI clarity.
+                    telemetry.inVerticalKick       = false
+                    publishCommonTelemetry(now)
                 } catch (t: Throwable) {
                     Log.w(TAG, "pump: ${t.message}")
                 }
 
-                // Safety watchdogs
-                if (state == ScanState.SWEEPING_LEFT || state == ScanState.SWEEPING_RIGHT) {
+                // Safety watchdogs — sweep AND climb share the same 5s no-marker
+                // rule. Skipped during mission execution: missions are time-
+                // /distance-bounded by the executor and don't expect markers,
+                // so the watchdog would always trip at 5s and prematurely halt
+                // any step longer than that.
+                if (!telemetry.missionRunning &&
+                    (isSweeping ||
+                     state == ScanState.CLIMBING_UP ||
+                     state == ScanState.CLIMBING_DOWN)) {
                     if (now - lastMarkerSeenTime > SAFETY_TIMEOUT_MS &&
                         now - movementStartTime > SAFETY_TIMEOUT_MS) {
                         mainHandler.post { safetyStop("No marker ${SAFETY_TIMEOUT_MS / 1000}s") }
                     }
                 }
-                if (state == ScanState.CLIMBING &&
-                    now - climbStartTime > climbDurationMs + SAFETY_TIMEOUT_MS) {
-                    mainHandler.post { safetyStop("Climb timeout") }
+                if (state == ScanState.TAKEOFF_DESCENDING &&
+                    now - takeoffDescendStartMs > TAKEOFF_DESCEND_TIMEOUT_MS) {
+                    mainHandler.post { onTakeoffDescentTimeout() }
                 }
             }
         }, 0, COMMAND_INTERVAL_MS)
@@ -334,10 +469,36 @@ class ArucoFollowFragment : DJIFragment() {
 
     private fun stopCommandLoop() { commandTimer?.cancel(); commandTimer = null }
 
+    /**
+     * Capture fields that aren't owned by the pump itself — state machine,
+     * gains/speeds, altitude, OA mode, obstacle distance. Called once per
+     * pump tick so the dashboard reflects live state without each call site
+     * needing to remember to update individual fields.
+     */
+    private fun publishCommonTelemetry(now: Long) {
+        telemetry.stateName        = state.name
+        telemetry.currentTargetId  = currentTargetId
+        telemetry.currentLevel     = currentLevel
+        telemetry.numLevels        = numLevels
+        telemetry.totalMarkers     = totalMarkers
+        telemetry.isTracking       = isTracking.get()
+        telemetry.isVSEnabled      = isVSEnabled
+        telemetry.pGain            = pGain
+        telemetry.dGain            = dGain
+        telemetry.sweepSpeedMps    = sweepSpeedMps
+        telemetry.climbSpeedMps    = climbSpeedMps
+        telemetry.altitudeM        = currentAltitudeM
+        telemetry.oaMode           = currentOaType?.name ?: "UNKNOWN"
+        telemetry.nearestObstacleM = nearestObstacleM
+        telemetry.lastMarkerAgeSec =
+            if (lastMarkerSeenTime > 0) (now - lastMarkerSeenTime) / 1000f else -1f
+        telemetry.lastUpdateMs     = now
+        // heightLimitM is set when the raise runs / restores; left alone here.
+    }
+
     private fun hoverStick() {
-        targetRollDeg     = 0f
-        targetThrottleMps = 0f
-        inHoverLock       = true
+        targetRollDeg = 0f
+        inHoverLock   = true
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -353,7 +514,7 @@ class ArucoFollowFragment : DJIFragment() {
         seekPGain       = view.findViewById(R.id.seek_pgain)
         seekDGain       = view.findViewById(R.id.seek_dgain)
         seekSweepSpeed  = view.findViewById(R.id.seek_sweep_speed)
-        seekClimbHeight = view.findViewById(R.id.seek_climb_height)
+        seekClimbSpeed  = view.findViewById(R.id.seek_climb_speed)
         btnTakeOff   = view.findViewById(R.id.btn_takeoff)
         btnEnableVS  = view.findViewById(R.id.btn_enable_vs)
         btnLand      = view.findViewById(R.id.btn_land)
@@ -361,6 +522,7 @@ class ArucoFollowFragment : DJIFragment() {
         btnGoLeft    = view.findViewById(R.id.btn_go_left)
         btnGoRight   = view.findViewById(R.id.btn_go_right)
         btnGoUp      = view.findViewById(R.id.btn_go_up)
+        btnGoDown    = view.findViewById(R.id.btn_go_down)
         btnStop      = view.findViewById(R.id.btn_stop)
         btnOaBrake   = view.findViewById(R.id.btn_oa_brake)
         btnOaBypass  = view.findViewById(R.id.btn_oa_bypass)
@@ -375,59 +537,9 @@ class ArucoFollowFragment : DJIFragment() {
         updateActionButtons()
         updateConfigText()
 
-        btnTakeOff.setOnClickListener {
-            basicAircraftControlVM.startTakeOff(object :
-                CommonCallbacks.CompletionCallbackWithParam<EmptyMsg> {
-                override fun onSuccess(t: EmptyMsg?) {
-                    mainHandler.post { tvState.text = "Hovering — Enable VS next" }
-                    ToastUtils.showToast("Take off OK")
-                }
-                override fun onFailure(e: IDJIError) { ToastUtils.showToast("Take off failed: $e") }
-            })
-        }
-
-        btnEnableVS.setOnClickListener {
-            if (isVSEnabled) return@setOnClickListener
-            VirtualStickManager.getInstance().enableVirtualStick(object : CommonCallbacks.CompletionCallback {
-                override fun onSuccess() {
-                    try { VirtualStickManager.getInstance().setVirtualStickAdvancedModeEnabled(true) }
-                    catch (t: Throwable) { Log.w(TAG, "adv mode: ${t.message}") }
-                    isVSEnabled = true; inHoverLock = true
-                    mainHandler.post {
-                        btnEnableVS.text = "VS ON"
-                        tvSafety.visibility = View.GONE
-                        if (state == ScanState.IDLE) tvState.text = "VS ON — Set levels & Start Scan"
-                        updateActionButtons()
-                    }
-                    ToastUtils.showToast("VS enabled")
-                }
-                override fun onFailure(e: IDJIError) { ToastUtils.showToast("VS failed: $e") }
-            })
-        }
-
-        btnLand.setOnClickListener {
-            emergencyStop()
-            try { VirtualStickManager.getInstance().setVirtualStickAdvancedModeEnabled(false) }
-            catch (_: Throwable) {}
-            VirtualStickManager.getInstance().disableVirtualStick(object : CommonCallbacks.CompletionCallback {
-                override fun onSuccess() {
-                    isVSEnabled = false
-                    mainHandler.post { btnEnableVS.text = "ENABLE VS" }
-                    basicAircraftControlVM.startLanding(object :
-                        CommonCallbacks.CompletionCallbackWithParam<EmptyMsg> {
-                        override fun onSuccess(t: EmptyMsg?) { mainHandler.post { tvState.text = "Landing..." } }
-                        override fun onFailure(e: IDJIError) { mainHandler.post { tvState.text = "Land failed: $e" } }
-                    })
-                }
-                override fun onFailure(e: IDJIError) {
-                    basicAircraftControlVM.startLanding(object :
-                        CommonCallbacks.CompletionCallbackWithParam<EmptyMsg> {
-                        override fun onSuccess(t: EmptyMsg?) {}
-                        override fun onFailure(e2: IDJIError) {}
-                    })
-                }
-            })
-        }
+        btnTakeOff.setOnClickListener { doTakeoff() }
+        btnEnableVS.setOnClickListener { doEnableVS() }
+        btnLand.setOnClickListener    { doLand() }
 
         btnStartScan.setOnClickListener {
             val lv = etLevels.text.toString().toIntOrNull()
@@ -437,7 +549,8 @@ class ArucoFollowFragment : DJIFragment() {
 
         btnGoLeft.setOnClickListener  { if (state == ScanState.CENTERED) startSweep(-1) }
         btnGoRight.setOnClickListener { if (state == ScanState.CENTERED) startSweep(1) }
-        btnGoUp.setOnClickListener    { if (state == ScanState.CENTERED) startClimb() }
+        btnGoUp.setOnClickListener    { if (state == ScanState.CENTERED) startClimb(1) }
+        btnGoDown.setOnClickListener  { if (state == ScanState.CENTERED) startClimb(-1) }
         btnStop.setOnClickListener    { emergencyStop(); ToastUtils.showToast("STOPPED") }
 
         // P-Gain: 0.03 – 0.30
@@ -459,10 +572,14 @@ class ArucoFollowFragment : DJIFragment() {
             sweepSpeedMps = 0.10f + p * 0.05f; updateConfigText()
         })
 
-        // Climb height: 0.2 – 1.2 m
-        seekClimbHeight.max = 10
-        seekClimbHeight.progress = ((climbHeight - 0.2f) * 10).toInt()
-        seekClimbHeight.setOnSeekBarChangeListener(slider { p -> climbHeight = 0.2f + p / 10f; updateConfigText() })
+        // Climb distance per UP/DOWN press: 0.50–2.00 m in 0.25 m steps (max=6),
+        // default 1.00 m. In POSITION mode this is the absolute altitude delta
+        // the FC will fly to, NOT a speed — the FC chooses its own ramp.
+        seekClimbSpeed.max = 6
+        seekClimbSpeed.progress = ((climbDistanceM - 0.50f) / 0.25f).toInt()
+        seekClimbSpeed.setOnSeekBarChangeListener(slider { p ->
+            climbDistanceM = 0.50f + p * 0.25f; updateConfigText()
+        })
     }
 
     private fun slider(onChange: (Int) -> Unit) = object : SeekBar.OnSeekBarChangeListener {
@@ -505,10 +622,9 @@ class ArucoFollowFragment : DJIFragment() {
         // attitude and overrides its own position-hold to honor the velocity
         // command, which is what ANGLE mode couldn't do on a constant input.
         // No PD priming needed — that path only runs for centering.
-        prevOffsetX       = 0f
-        targetRollDeg     = 0f
-        targetThrottleMps = 0f
-        inHoverLock       = true
+        prevOffsetX   = 0f
+        targetRollDeg = 0f
+        inHoverLock   = true
 
         state = if (direction > 0) ScanState.SWEEPING_RIGHT else ScanState.SWEEPING_LEFT
         val dir = if (direction > 0) "RIGHT" else "LEFT"
@@ -517,20 +633,430 @@ class ArucoFollowFragment : DJIFragment() {
         updateUI()
     }
 
-    private fun startClimb() {
-        climbDurationMs    = ((climbHeight / CLIMB_SPEED_MPS) * 1000).toLong()
+    private fun startClimb(direction: Int) {
         climbStartTime     = System.currentTimeMillis()
         movementStartTime  = System.currentTimeMillis()
         lastMarkerSeenTime = System.currentTimeMillis()
         safetyStopTriggered = false; centeringMissFrames = 0
-        currentLevel++
-        currentTargetId = (currentTargetId + 1).coerceAtMost(totalMarkers - 1)
+
+        // Capture the altitude at climb start so the POSITION-mode target is
+        // stable for the duration of the climb (target = startAlt ± distance).
+        // If we used currentAltitudeM directly the goal would chase the drone.
+        climbStartAltitudeM = if (currentAltitudeM > 0.0) currentAltitudeM else
+            try { FlightControllerKey.KeyAltitude.create().get(0.0) }
+            catch (_: Throwable) { 0.0 }
+
+        // VPS toggle is unsupported on Mini 4 Pro firmware (call fails with
+        // "Not supported") — leaving the attempt in for forward compatibility,
+        // but it's a no-op on this drone. POSITION mode does the heavy lifting.
+        if (direction > 0) disableVpsForClimb()
+
+        // Jump by one full level (markersPerLevel). With 2 markers per level
+        // the right-side marker N steps to the right-side marker N+2 on the
+        // next level up, not to the left-side marker N+1 on the SAME level
+        // (which is already in frame and would short-circuit the climb).
+        val markersPerLevel = if (numLevels > 0) (totalMarkers / numLevels).coerceAtLeast(1) else 1
+        if (direction > 0) {
+            currentLevel++
+            currentTargetId = (currentTargetId + markersPerLevel).coerceAtMost(totalMarkers - 1)
+        } else {
+            currentLevel = (currentLevel - 1).coerceAtLeast(0)
+            currentTargetId = (currentTargetId - markersPerLevel).coerceAtLeast(0)
+        }
         sweepTargetAdvanced = true
-        targetRollDeg     = 0f
-        targetThrottleMps = CLIMB_SPEED_MPS
-        state = ScanState.CLIMBING
-        Log.i(TAG, "Climb ${CLIMB_SPEED_MPS}m/s ${climbDurationMs}ms → marker $currentTargetId")
-        ToastUtils.showToast("Climbing to level ${currentLevel + 1}")
+        targetRollDeg = 0f
+        state = if (direction > 0) ScanState.CLIMBING_UP else ScanState.CLIMBING_DOWN
+        val dir = if (direction > 0) "UP" else "DOWN"
+        val targetAlt = if (direction > 0) climbStartAltitudeM + climbDistanceM
+                        else                (climbStartAltitudeM - climbDistanceM).coerceAtLeast(0.3)
+        logBuffer.i(TAG, "Climb $dir start (POSITION): target marker=$currentTargetId (jump=$markersPerLevel), " +
+            "from ${"%.2f".format(climbStartAltitudeM)}m to ${"%.2f".format(targetAlt)}m " +
+            "(distance=${climbDistanceM}m)")
+        ToastUtils.showToast("Climbing $dir → marker $currentTargetId (${climbSpeedMps}m/s)")
+        updateUI()
+    }
+
+    // ── Takeoff auto-descent ──
+
+    private fun beginTakeoffDescent() {
+        ToastUtils.showToast("Descent: stabilize done, enabling VS")
+        Log.i(TAG, "beginTakeoffDescent: isVSEnabled=$isVSEnabled")
+        if (isVSEnabled) {
+            startTakeoffDescentNow()
+            return
+        }
+        VirtualStickManager.getInstance().enableVirtualStick(object : CommonCallbacks.CompletionCallback {
+            override fun onSuccess() {
+                Log.i(TAG, "VS auto-enable: success")
+                try { VirtualStickManager.getInstance().setVirtualStickAdvancedModeEnabled(true) }
+                catch (t: Throwable) { Log.w(TAG, "adv mode (auto): ${t.message}") }
+                isVSEnabled = true; inHoverLock = true
+                mainHandler.post {
+                    btnEnableVS.text = "VS ON"
+                    tvSafety.visibility = View.GONE
+                    ToastUtils.showToast("VS enabled (auto)")
+                    startTakeoffDescentNow()
+                }
+            }
+            override fun onFailure(e: IDJIError) {
+                Log.w(TAG, "VS auto-enable failed: $e")
+                mainHandler.post {
+                    tvState.text = "Take off OK — VS enable failed; tap ENABLE VS"
+                    ToastUtils.showToast("VS auto-enable failed: $e")
+                }
+            }
+        })
+    }
+
+    private fun startTakeoffDescentNow() {
+        val alt = try {
+            FlightControllerKey.KeyAltitude.create().get(0.0)
+        } catch (_: Throwable) { 0.0 }
+        if (alt > 0.0) currentAltitudeM = alt
+        Log.i(TAG, "startTakeoffDescentNow: sync alt=${"%.2f".format(alt)}m")
+
+        if (alt > ALT_TOLERANCE_M && alt <= TARGET_TAKEOFF_HEIGHT_M + ALT_TOLERANCE_M) {
+            ToastUtils.showToast("Descent skipped: already at %.2fm".format(alt))
+            onTakeoffDescentComplete()
+            return
+        }
+        targetRollDeg = 0f
+        inHoverLock = true
+        takeoffDescendStartMs = System.currentTimeMillis()
+        state = ScanState.TAKEOFF_DESCENDING
+        Log.i(TAG, "Descending to ${TARGET_TAKEOFF_HEIGHT_M}m at ${TAKEOFF_DESCEND_SPEED_MPS}m/s (from ${"%.2f".format(alt)}m)")
+        ToastUtils.showToast("Descend: %.2fm → %.2fm @ %.2fm/s".format(
+            alt, TARGET_TAKEOFF_HEIGHT_M, TAKEOFF_DESCEND_SPEED_MPS))
+        updateUI()
+    }
+
+    // ── Height-limit cap management ──
+
+    // Owner for the one-shot HeightLimit listener (separate from `this` so we
+    // can cancel it independently of the fragment-wide cancelListen on destroy).
+    private val heightLimitListenerOwner = Any()
+    @Volatile private var heightLimitHandled: Boolean = false
+
+    private fun raiseHeightLimitForScan() {
+        if (originalHeightLimit != null) {
+            ToastUtils.showToast("HeightLimit: already raised this session")
+            return
+        }
+        heightLimitHandled = false
+
+        // Fast path: many DJI keys are push-populated, but try a sync read
+        // first in case the value is already cached.
+        val sync = try {
+            FlightControllerKey.KeyHeightLimit.create().get(-1)
+        } catch (_: Throwable) { -1 }
+        Log.i(TAG, "raiseHeightLimitForScan: sync read = $sync")
+        if (sync >= 0) {
+            heightLimitHandled = true
+            ToastUtils.showToast("HeightLimit: read = ${sync}m")
+            applyHeightLimitRaise(sync)
+            return
+        }
+
+        // Slow path: wait for the first FC push of KeyHeightLimit (up to 5s).
+        ToastUtils.showToast("HeightLimit: read pending, waiting...")
+        Log.i(TAG, "HeightLimit sync read returned null — waiting for push")
+        try {
+            FlightControllerKey.KeyHeightLimit.create().listen(heightLimitListenerOwner) { v: Int? ->
+                if (heightLimitHandled) return@listen
+                val value = v ?: return@listen
+                heightLimitHandled = true
+                try { KeyManager.getInstance().cancelListen(heightLimitListenerOwner) }
+                catch (_: Throwable) {}
+                mainHandler.post { applyHeightLimitRaise(value) }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "HeightLimit listener setup threw: ${t.message}")
+            return
+        }
+        mainHandler.postDelayed({
+            if (!heightLimitHandled) {
+                heightLimitHandled = true
+                try { KeyManager.getInstance().cancelListen(heightLimitListenerOwner) }
+                catch (_: Throwable) {}
+                Log.w(TAG, "HeightLimit listener timed out — no FC push in 5s")
+                ToastUtils.showToast("HeightLimit read timeout — set it in Pilot")
+            }
+        }, 5000)
+    }
+
+    private fun applyHeightLimitRaise(current: Int) {
+        telemetry.heightLimitM = current
+        if (current >= TARGET_HEIGHT_LIMIT_M) {
+            Log.i(TAG, "HeightLimit already ${current}m — no change")
+            mainHandler.post { ToastUtils.showToast("HeightLimit already ${current}m — no change") }
+            return
+        }
+        originalHeightLimit = current
+        val key = KeyTools.createKey(FlightControllerKey.KeyHeightLimit)
+        KeyManager.getInstance().setValue(key, TARGET_HEIGHT_LIMIT_M,
+            object : CommonCallbacks.CompletionCallback {
+                override fun onSuccess() {
+                    Log.i(TAG, "HeightLimit raised: ${current}m → ${TARGET_HEIGHT_LIMIT_M}m")
+                    telemetry.heightLimitM = TARGET_HEIGHT_LIMIT_M
+                    mainHandler.post {
+                        ToastUtils.showToast("HeightLimit: ${current}m → ${TARGET_HEIGHT_LIMIT_M}m")
+                    }
+                }
+                override fun onFailure(error: IDJIError) {
+                    Log.w(TAG, "HeightLimit raise failed: $error")
+                    originalHeightLimit = null
+                    mainHandler.post { ToastUtils.showToast("HeightLimit raise failed: $error") }
+                }
+            })
+    }
+
+    // ── Flight control actions (callable from both phone buttons and dashboard) ──
+
+    private fun doTakeoff() {
+        basicAircraftControlVM.startTakeOff(object :
+            CommonCallbacks.CompletionCallbackWithParam<EmptyMsg> {
+            override fun onSuccess(t: EmptyMsg?) {
+                mainHandler.post {
+                    tvState.text = "Hovering — auto-descend to %.2fm in %.0fs"
+                        .format(TARGET_TAKEOFF_HEIGHT_M, TAKEOFF_STABILIZE_MS / 1000f)
+                }
+                ToastUtils.showToast("Take off OK")
+                logBuffer.i(TAG, "Takeoff command accepted")
+                raiseHeightLimitForScan()
+                mainHandler.postDelayed({ beginTakeoffDescent() }, TAKEOFF_STABILIZE_MS)
+            }
+            override fun onFailure(e: IDJIError) {
+                ToastUtils.showToast("Take off failed: $e")
+                logBuffer.w(TAG, "Takeoff failed: $e")
+            }
+        })
+    }
+
+    private fun doEnableVS() {
+        if (isVSEnabled) return
+        VirtualStickManager.getInstance().enableVirtualStick(object : CommonCallbacks.CompletionCallback {
+            override fun onSuccess() {
+                try { VirtualStickManager.getInstance().setVirtualStickAdvancedModeEnabled(true) }
+                catch (t: Throwable) { Log.w(TAG, "adv mode: ${t.message}") }
+                isVSEnabled = true; inHoverLock = true
+                mainHandler.post {
+                    btnEnableVS.text = "VS ON"
+                    tvSafety.visibility = View.GONE
+                    if (state == ScanState.IDLE) tvState.text = "VS ON — Set levels & Start Scan"
+                    updateActionButtons()
+                }
+                ToastUtils.showToast("VS enabled")
+                logBuffer.i(TAG, "VS enabled")
+            }
+            override fun onFailure(e: IDJIError) {
+                ToastUtils.showToast("VS failed: $e")
+                logBuffer.w(TAG, "VS enable failed: $e")
+            }
+        })
+    }
+
+    private fun doDisableVS() {
+        // Cleanly hand control back to the RC without landing.
+        if (!isVSEnabled) return
+        emergencyStop()
+        try { VirtualStickManager.getInstance().setVirtualStickAdvancedModeEnabled(false) }
+        catch (_: Throwable) {}
+        VirtualStickManager.getInstance().disableVirtualStick(object : CommonCallbacks.CompletionCallback {
+            override fun onSuccess() {
+                isVSEnabled = false
+                mainHandler.post { btnEnableVS.text = "ENABLE VS" }
+                logBuffer.i(TAG, "VS disabled")
+            }
+            override fun onFailure(e: IDJIError) {
+                logBuffer.w(TAG, "VS disable failed: $e")
+            }
+        })
+    }
+
+    private fun doLand() {
+        // Stop any in-progress mission, park the drone, drop VS, then land.
+        if (telemetry.missionRunning) missionExecutor.stop()
+        emergencyStop()
+        try { VirtualStickManager.getInstance().setVirtualStickAdvancedModeEnabled(false) }
+        catch (_: Throwable) {}
+        VirtualStickManager.getInstance().disableVirtualStick(object : CommonCallbacks.CompletionCallback {
+            override fun onSuccess() {
+                isVSEnabled = false
+                mainHandler.post { btnEnableVS.text = "ENABLE VS" }
+                logBuffer.i(TAG, "Land: VS off, starting landing")
+                basicAircraftControlVM.startLanding(object :
+                    CommonCallbacks.CompletionCallbackWithParam<EmptyMsg> {
+                    override fun onSuccess(t: EmptyMsg?) { mainHandler.post { tvState.text = "Landing..." } }
+                    override fun onFailure(e: IDJIError) { mainHandler.post { tvState.text = "Land failed: $e" } }
+                })
+            }
+            override fun onFailure(e: IDJIError) {
+                // Even if VS disable failed, try to land anyway (best-effort).
+                logBuffer.w(TAG, "Land: VS disable failed ($e), landing anyway")
+                basicAircraftControlVM.startLanding(object :
+                    CommonCallbacks.CompletionCallbackWithParam<EmptyMsg> {
+                    override fun onSuccess(t: EmptyMsg?) {}
+                    override fun onFailure(e2: IDJIError) {}
+                })
+            }
+        })
+    }
+
+    // ── Mission scripting ──
+
+    /** Bridge between MissionExecutor (background thread) and the fragment's
+     *  state machine. All methods are called from the mission thread; field
+     *  writes are safe because the underlying fields are @Volatile. */
+    private val missionHost = object : MissionExecutor.Host {
+        override fun currentAltitudeM(): Double = this@ArucoFollowFragment.currentAltitudeM
+
+        override fun missionStartLeft()  { missionDriveSweep(-1) }
+        override fun missionStartRight() { missionDriveSweep(+1) }
+
+        override fun missionStartUp(distanceM: Float)   { missionDriveClimb(distanceM, up = true) }
+        override fun missionStartDown(distanceM: Float) { missionDriveClimb(distanceM, up = false) }
+
+        override fun missionStopAndHover() {
+            state = ScanState.IDLE
+            hoverStick()
+        }
+
+        override fun missionLand() {
+            // doLand mutates UI / SDK state and must run on the main thread.
+            mainHandler.post { doLand() }
+        }
+
+        override fun motorsOn(): Boolean = telemetry.motorsOn
+    }
+
+    /** Mirrors startSweep() but without marker advancement or capture-zone
+     *  expectations — the executor terminates the step by time. */
+    private fun missionDriveSweep(direction: Int) {
+        movementStartTime  = System.currentTimeMillis()
+        lastMarkerSeenTime = System.currentTimeMillis()   // silence safety
+        safetyStopTriggered = false
+        prevOffsetX   = 0f
+        targetRollDeg = 0f
+        inHoverLock   = true
+        state = if (direction > 0) ScanState.SWEEPING_RIGHT else ScanState.SWEEPING_LEFT
+    }
+
+    /** Mirrors startClimb() in POSITION-mode terms but without marker
+     *  advancement; distance is supplied by the mission step. */
+    private fun missionDriveClimb(distanceM: Float, up: Boolean) {
+        climbStartTime     = System.currentTimeMillis()
+        movementStartTime  = System.currentTimeMillis()
+        lastMarkerSeenTime = System.currentTimeMillis()
+        safetyStopTriggered = false
+        climbStartAltitudeM = if (currentAltitudeM > 0.0) currentAltitudeM else
+            try { FlightControllerKey.KeyAltitude.create().get(0.0) }
+            catch (_: Throwable) { 0.0 }
+        climbDistanceM = distanceM
+        targetRollDeg = 0f
+        state = if (up) ScanState.CLIMBING_UP else ScanState.CLIMBING_DOWN
+    }
+
+    /** Dashboard WebSocket commands. Runs on the NanoWSD reader thread, so any
+     *  call into MSDK callbacks that touch views must marshal via mainHandler. */
+    private val dashboardCommandHandler = object : RackScanDashboardServer.CommandHandler {
+        override fun onCommand(cmd: String, payload: org.json.JSONObject) {
+            logBuffer.i(TAG, "Dashboard cmd: $cmd")
+            when (cmd) {
+                "takeoff"   -> mainHandler.post { doTakeoff() }
+                "land"      -> mainHandler.post { doLand() }
+                "enableVS"  -> mainHandler.post { doEnableVS() }
+                "disableVS" -> mainHandler.post { doDisableVS() }
+                "runMission" -> {
+                    val arr = payload.optJSONArray("steps") ?: return
+                    val steps = MissionStep.listFromJsonArray(arr)
+                    val loop  = payload.optBoolean("loop", false)
+                    if (steps.isEmpty()) {
+                        logBuffer.w(TAG, "runMission rejected: empty/invalid steps")
+                        return
+                    }
+                    if (!isVSEnabled) {
+                        logBuffer.w(TAG, "runMission rejected: VS not enabled")
+                        return
+                    }
+                    if (!missionExecutor.start(steps, loop)) {
+                        logBuffer.w(TAG, "runMission rejected: a mission is already running")
+                    }
+                }
+                "stopMission" -> missionExecutor.stop()
+                else -> logBuffer.w(TAG, "Unknown dashboard cmd: $cmd")
+            }
+        }
+    }
+
+    // ── VPS (Vision Positioning System) toggle for climb ──
+
+    private fun disableVpsForClimb() {
+        if (telemetry.vpsDisabledByUs) return    // already off
+        try {
+            PerceptionManager.getInstance().setVisionPositioningEnabled(false,
+                object : CommonCallbacks.CompletionCallback {
+                    override fun onSuccess() {
+                        telemetry.vpsDisabledByUs = true
+                        logBuffer.i(TAG, "VPS disabled for climb")
+                    }
+                    override fun onFailure(error: IDJIError) {
+                        logBuffer.w(TAG, "VPS disable failed: $error")
+                    }
+                })
+        } catch (t: Throwable) {
+            logBuffer.w(TAG, "VPS disable threw: ${t.message}")
+        }
+    }
+
+    private fun restoreVpsIfDisabled() {
+        if (!telemetry.vpsDisabledByUs) return
+        try {
+            PerceptionManager.getInstance().setVisionPositioningEnabled(true,
+                object : CommonCallbacks.CompletionCallback {
+                    override fun onSuccess() {
+                        telemetry.vpsDisabledByUs = false
+                        logBuffer.i(TAG, "VPS restored")
+                    }
+                    override fun onFailure(error: IDJIError) {
+                        logBuffer.w(TAG, "VPS restore failed: $error")
+                    }
+                })
+        } catch (t: Throwable) {
+            logBuffer.w(TAG, "VPS restore threw: ${t.message}")
+        }
+    }
+
+    private fun restoreHeightLimit() {
+        val orig = originalHeightLimit ?: return
+        originalHeightLimit = null
+        try {
+            KeyManager.getInstance().setValue(
+                KeyTools.createKey(FlightControllerKey.KeyHeightLimit),
+                orig,
+                object : CommonCallbacks.CompletionCallback {
+                    override fun onSuccess() { Log.i(TAG, "HeightLimit restored to ${orig}m") }
+                    override fun onFailure(error: IDJIError) {
+                        Log.w(TAG, "HeightLimit restore failed: $error")
+                    }
+                })
+        } catch (t: Throwable) {
+            Log.w(TAG, "HeightLimit restore threw: ${t.message}")
+        }
+    }
+
+    private fun onTakeoffDescentComplete() {
+        if (state != ScanState.TAKEOFF_DESCENDING) return
+        state = ScanState.IDLE
+        ToastUtils.showToast("At %.2fm — ready to scan".format(currentAltitudeM))
+        Log.i(TAG, "Descent complete at ${"%.2f".format(currentAltitudeM)}m")
+        updateUI()
+    }
+
+    private fun onTakeoffDescentTimeout() {
+        if (state != ScanState.TAKEOFF_DESCENDING) return
+        state = ScanState.IDLE
+        Log.w(TAG, "Descent timeout at ${"%.2f".format(currentAltitudeM)}m (target ${TARGET_TAKEOFF_HEIGHT_M}m)")
+        ToastUtils.showToast("Descent timeout @ %.2fm".format(currentAltitudeM))
         updateUI()
     }
 
@@ -550,14 +1076,17 @@ class ArucoFollowFragment : DJIFragment() {
         // Reset sweepTargetAdvanced so the next LEFT/RIGHT still targets the
         // same marker (no further increment) but the state machine is clean.
         sweepTargetAdvanced = false
-        Log.w(TAG, "SAFETY: $reason")
+        restoreVpsIfDisabled()
+        logBuffer.w(TAG, "SAFETY stop: $reason (alt=${"%.2f".format(currentAltitudeM)}m, target=$currentTargetId)")
         tvSafety.text = "SAFETY: $reason"; tvSafety.visibility = View.VISIBLE
         ToastUtils.showToast("Safety stop: $reason"); updateUI()
     }
 
     private fun emergencyStop() {
         isTracking.set(false); state = ScanState.IDLE; hoverStick(); prevOffsetX = 0f
-        sweepTargetAdvanced = false; centeringMissFrames = 0; updateUI()
+        sweepTargetAdvanced = false; centeringMissFrames = 0
+        restoreVpsIfDisabled()
+        updateUI()
     }
 
     // ── Frame processing ──
@@ -591,11 +1120,17 @@ class ArucoFollowFragment : DJIFragment() {
             }
             if (detected) lastMarkerSeenTime = System.currentTimeMillis()
 
+            // Dashboard publish — frame-level fields
+            telemetry.detected      = detected
+            telemetry.offsetX       = offsetX
+            telemetry.markerSize    = markerSize
+            telemetry.visibleIdsCsv = visIds.joinToString(",")
+
             when (state) {
                 ScanState.CENTERING, ScanState.FINE_TUNING -> {
                     if (detected) {
                         centeringMissFrames = 0
-                        targetRollDeg = computeRollAngle(offsetX); targetThrottleMps = 0f
+                        targetRollDeg = computeRollAngle(offsetX)
                         if (abs(offsetX) < CENTER_THRESHOLD) mainHandler.post { onCentered() }
                     } else {
                         if (++centeringMissFrames >= CENTERING_MISS_TOL) hoverStick()
@@ -607,17 +1142,31 @@ class ArucoFollowFragment : DJIFragment() {
                     // Just watch for the target marker entering the capture
                     // zone and hand off to CENTERING, seeding prevOffsetX so
                     // the first centering D-term doesn't spike from 0.
-                    if (detected && abs(offsetX) < SWEEP_CAPTURE_ZONE) {
+                    // (Skipped during mission scripting — those are time-based.)
+                    if (!telemetry.missionRunning &&
+                        detected && abs(offsetX) < SWEEP_CAPTURE_ZONE) {
                         prevOffsetX = offsetX
                         targetRollDeg = 0f      // pump will see ANGLE 0° during the brief gap
                         state = ScanState.CENTERING
                         mainHandler.post { updateUI() }
                     }
                 }
-                ScanState.CLIMBING -> {
+                ScanState.CLIMBING_UP, ScanState.CLIMBING_DOWN -> {
+                    // Hand off to FINE_TUNING once the target marker enters
+                    // the capture zone, after MIN_CLIMB_DURATION_MS, but only
+                    // when we're operating under operator control — mission
+                    // scripts terminate climbs by altitude target / time.
                     val elapsed = System.currentTimeMillis() - climbStartTime
-                    if (elapsed >= climbDurationMs || (detected && elapsed > 500)) {
-                        state = ScanState.FINE_TUNING; hoverStick(); mainHandler.post { updateUI() }
+                    if (!telemetry.missionRunning &&
+                        elapsed >= MIN_CLIMB_DURATION_MS &&
+                        detected && abs(offsetX) < SWEEP_CAPTURE_ZONE) {
+                        logBuffer.i(TAG, "Climb capture: target=$currentTargetId offset=${"%.2f".format(offsetX)} " +
+                            "after ${elapsed}ms, alt=${"%.2f".format(currentAltitudeM)}m → FINE_TUNING")
+                        prevOffsetX = offsetX
+                        targetRollDeg = 0f
+                        state = ScanState.FINE_TUNING
+                        restoreVpsIfDisabled()
+                        mainHandler.post { updateUI() }
                     }
                 }
                 else -> {}
@@ -631,10 +1180,12 @@ class ArucoFollowFragment : DJIFragment() {
 
             val fOff = offsetX; val fDet = detected; val fSz = markerSize
             val fIds = visIds.toList()
-            val fRoll = targetRollDeg; val fThr = targetThrottleMps
+            val fRoll = targetRollDeg
             val fTicks = pumpTicks.get(); val now = System.currentTimeMillis()
             val fObs = nearestObstacleM
             val isSweeping = state == ScanState.SWEEPING_LEFT || state == ScanState.SWEEPING_RIGHT
+            val isClimbing = state == ScanState.CLIMBING_UP || state == ScanState.CLIMBING_DOWN
+            val fAlt = currentAltitudeM
             val inKick = now < kickEndsAtMs
 
             mainHandler.post {
@@ -649,13 +1200,16 @@ class ArucoFollowFragment : DJIFragment() {
                 }
 
                 val modeTag = when {
-                    isSweeping -> "SWEEP %.2fm/s".format(sweepSpeedMps)
-                    inKick     -> "ANG* ${fRoll.toInt()}°"
-                    else       -> "ANG ${fRoll.toInt()}°"
+                    isSweeping                         -> "SWEEP %.2fm/s".format(sweepSpeedMps)
+                    state == ScanState.CLIMBING_UP     -> "UP→%.2fm".format(climbStartAltitudeM + climbDistanceM)
+                    state == ScanState.CLIMBING_DOWN   -> "DOWN→%.2fm".format((climbStartAltitudeM - climbDistanceM).coerceAtLeast(0.3))
+                    state == ScanState.TAKEOFF_DESCENDING -> "DESCEND %.2fm/s".format(TAKEOFF_DESCEND_SPEED_MPS)
+                    inKick                             -> "ANG* ${fRoll.toInt()}°"
+                    else                               -> "ANG ${fRoll.toInt()}°"
                 }
-                tvStickDebug.text = "$modeTag thr=${fThr} pump=#$fTicks"
+                tvStickDebug.text = "$modeTag alt=%.2fm pump=#$fTicks".format(fAlt)
 
-                if (isSweeping || state == ScanState.CLIMBING) {
+                if (isSweeping || isClimbing) {
                     val age = (now - lastMarkerSeenTime) / 1000f
                     val obsStr = if (fObs in 0.01f..OBSTACLE_WARN_M) " ⚠OBS %.1fm".format(fObs) else ""
                     if (age > 1f || obsStr.isNotEmpty()) {
@@ -690,11 +1244,14 @@ class ArucoFollowFragment : DJIFragment() {
     private fun updateUI() { mainHandler.post { updateActionButtons(); updateStateText() } }
 
     private fun updateActionButtons() {
+        fun hideAllDirectional() {
+            btnGoLeft.visibility = View.GONE; btnGoRight.visibility = View.GONE
+            btnGoUp.visibility = View.GONE; btnGoDown.visibility = View.GONE
+        }
         when (state) {
             ScanState.IDLE -> {
                 btnStartScan.visibility = if (isVSEnabled) View.VISIBLE else View.GONE
-                btnGoLeft.visibility = View.GONE; btnGoRight.visibility = View.GONE
-                btnGoUp.visibility = View.GONE; btnStop.visibility = View.GONE
+                hideAllDirectional(); btnStop.visibility = View.GONE
                 etLevels.isEnabled = true
             }
             ScanState.CENTERED -> {
@@ -703,19 +1260,20 @@ class ArucoFollowFragment : DJIFragment() {
                 btnGoLeft.visibility  = if (ok) View.VISIBLE else View.GONE
                 btnGoRight.visibility = if (ok) View.VISIBLE else View.GONE
                 btnGoUp.visibility    = if (ok) View.VISIBLE else View.GONE
+                btnGoDown.visibility  = if (ok) View.VISIBLE else View.GONE
                 btnStop.visibility = View.VISIBLE; etLevels.isEnabled = false
             }
             ScanState.SWEEPING_LEFT, ScanState.SWEEPING_RIGHT,
-            ScanState.CLIMBING, ScanState.CENTERING, ScanState.FINE_TUNING -> {
+            ScanState.CLIMBING_UP, ScanState.CLIMBING_DOWN,
+            ScanState.CENTERING, ScanState.FINE_TUNING,
+            ScanState.TAKEOFF_DESCENDING -> {
                 btnStartScan.visibility = View.GONE
-                btnGoLeft.visibility = View.GONE; btnGoRight.visibility = View.GONE
-                btnGoUp.visibility = View.GONE; btnStop.visibility = View.VISIBLE
+                hideAllDirectional(); btnStop.visibility = View.VISIBLE
                 etLevels.isEnabled = false
             }
             ScanState.COMPLETE -> {
                 btnStartScan.visibility = View.VISIBLE
-                btnGoLeft.visibility = View.GONE; btnGoRight.visibility = View.GONE
-                btnGoUp.visibility = View.GONE; btnStop.visibility = View.GONE
+                hideAllDirectional(); btnStop.visibility = View.GONE
                 etLevels.isEnabled = true
             }
         }
@@ -725,19 +1283,21 @@ class ArucoFollowFragment : DJIFragment() {
         tvState.text = when (state) {
             ScanState.IDLE        -> "IDLE — Set levels & Start Scan"
             ScanState.CENTERING   -> "CENTERING on marker $currentTargetId..."
-            ScanState.CENTERED    -> "CENTERED marker $currentTargetId (L${currentLevel + 1})\nChoose: LEFT / RIGHT / UP"
+            ScanState.CENTERED    -> "CENTERED marker $currentTargetId (L${currentLevel + 1})\nChoose: LEFT / RIGHT / UP / DOWN"
             ScanState.SWEEPING_LEFT  -> "SWEEP LEFT → marker $currentTargetId (%.2fm/s)".format(sweepSpeedMps)
             ScanState.SWEEPING_RIGHT -> "SWEEP RIGHT → marker $currentTargetId (%.2fm/s)".format(sweepSpeedMps)
-            ScanState.CLIMBING    -> "CLIMBING L${currentLevel + 1} %.1fs/%.1fs".format(
-                (System.currentTimeMillis() - climbStartTime) / 1000f, climbDurationMs / 1000f)
+            ScanState.CLIMBING_UP   -> "CLIMB UP → marker $currentTargetId (target %.2fm)".format(climbStartAltitudeM + climbDistanceM)
+            ScanState.CLIMBING_DOWN -> "CLIMB DOWN → marker $currentTargetId (target %.2fm)".format((climbStartAltitudeM - climbDistanceM).coerceAtLeast(0.3))
             ScanState.FINE_TUNING -> "FINE-TUNING marker $currentTargetId"
             ScanState.COMPLETE    -> "COMPLETE — $numLevels levels done"
+            ScanState.TAKEOFF_DESCENDING -> "DESCEND to %.2fm (now %.2fm)".format(
+                TARGET_TAKEOFF_HEIGHT_M, currentAltitudeM)
         }
     }
 
     private fun updateConfigText() {
-        tvConfigInfo.text = "P:%.2f D:%.2f | Swp:%.2fm/s | Clb:${CLIMB_SPEED_MPS}m/s H:${climbHeight}m"
-            .format(pGain, dGain, sweepSpeedMps)
+        tvConfigInfo.text = "P:%.2f D:%.2f | Swp:%.2fm/s | Clb:%.2fm"
+            .format(pGain, dGain, sweepSpeedMps, climbDistanceM)
     }
 
     // ── OA mode toggle ──
@@ -789,6 +1349,17 @@ class ArucoFollowFragment : DJIFragment() {
         try { PerceptionManager.getInstance().removeObstacleDataListener(obstacleListener) }
         catch (_: Throwable) {}
         try { PerceptionManager.getInstance().removePerceptionInformationListener(perceptionInfoListener) }
+        catch (_: Throwable) {}
+        try { missionExecutor.shutdown() }
+        catch (_: Throwable) {}
+        try { dashboardServer?.stop() }
+        catch (_: Throwable) {}
+        dashboardServer = null
+        restoreVpsIfDisabled()
+        restoreHeightLimit()
+        try { KeyManager.getInstance().cancelListen(this) }
+        catch (_: Throwable) {}
+        try { KeyManager.getInstance().cancelListen(heightLimitListenerOwner) }
         catch (_: Throwable) {}
         try { MediaDataCenter.getInstance().cameraStreamManager.removeFrameListener(frameListener) }
         catch (_: Exception) {}
