@@ -242,4 +242,9 @@
         android:name="dji.sampleV5.aircraft.pages.RtspStreamingFragment"
         android:label="rtsp_streaming_page"
         tools:layout="@layout/frag_rtsp_streaming" />
+    <fragment
+        android:id="@+id/rack_scan_missioning_page"
+        android:name="dji.sampleV5.aircraft.pages.RackScanMissioningFragment"
+        android:label="rack_scan_missioning_page"
+        tools:layout="@layout/frag_rack_scan_missioning" />
 </navigation>

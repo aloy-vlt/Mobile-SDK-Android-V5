@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#FF0F1824"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <!-- ═══ Header ═══ -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="RACK SCAN MISSIONING"
+            android:textColor="#FFE2EAF3"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.08" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Assign and monitor rack-scan missions from a browser on the same Wi-Fi. Connect the aircraft, start the dashboard, then open the URL below on your laptop or tablet."
+            android:textColor="#FF92AFD3"
+            android:textSize="13sp" />
+
+        <!-- ═══ Dashboard card ═══ -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:orientation="vertical"
+            android:background="#FF132337"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="MISSION DASHBOARD"
+                android:textColor="#FFC066DB"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.1" />
+
+            <Button
+                android:id="@+id/btn_rm_dashboard_toggle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="Start Dashboard"
+                android:textColor="#FFFFFFFF"
+                android:backgroundTint="#FF8B00B3" />
+
+            <TextView
+                android:id="@+id/tv_rm_dashboard_status"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="Dashboard: stopped"
+                android:textColor="#FF56D7BF"
+                android:textSize="14sp"
+                android:fontFamily="monospace" />
+
+            <TextView
+                android:id="@+id/tv_rm_dashboard_url"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:textColor="#FFE2EAF3"
+                android:textSize="17sp"
+                android:textStyle="bold"
+                android:fontFamily="monospace"
+                android:textIsSelectable="true"
+                android:hint="(tap to copy when running)"
+                android:textColorHint="#FF5885BC" />
+
+            <TextView
+                android:id="@+id/tv_rm_stats"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="Dashboard clients: 0    Feed: 0 fps"
+                android:textColor="#FF92AFD3"
+                android:textSize="13sp"
+                android:fontFamily="monospace" />
+        </LinearLayout>
+
+        <!-- ═══ RTSP card ═══ -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:orientation="vertical"
+            android:background="#FF132337"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="RTSP STREAM"
+                android:textColor="#FFC066DB"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.1" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Low-latency H.264 feed for VLC / ffplay / OpenCV / GStreamer."
+                android:textColor="#FF92AFD3"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btn_rm_rtsp_toggle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="Start RTSP Stream"
+                android:textColor="#FFE2EAF3"
+                android:backgroundTint="#FF233A57" />
+
+            <TextView
+                android:id="@+id/tv_rm_rtsp_status"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="RTSP: stopped"
+                android:textColor="#FF56D7BF"
+                android:textSize="14sp"
+                android:fontFamily="monospace" />
+
+            <TextView
+                android:id="@+id/tv_rm_rtsp_url"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:textColor="#FFE2EAF3"
+                android:textSize="16sp"
+                android:fontFamily="monospace"
+                android:textIsSelectable="true"
+                android:hint="(tap to copy when streaming)"
+                android:textColorHint="#FF5885BC" />
+        </LinearLayout>
+
+    </LinearLayout>
+</ScrollView>

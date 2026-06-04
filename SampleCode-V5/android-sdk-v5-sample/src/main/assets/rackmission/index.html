@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Vailient · Rack Scan Missioning</title>
+<link rel="icon" type="image/png" href="logomark.png" />
+<link rel="apple-touch-icon" href="logomark.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@300;400;500;600;700&family=Tourney:wght@600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0F1824; --bg-2:#0b121c; --panel:#132337; --elev:#1C2E45;
+    --border:#233A57; --border-2:#395F8E;
+    --txt:#E2EAF3; --txt-2:#92AFD3; --txt-3:#5885BC;
+    --accent:#a836cc; --accent-2:#8b00b3; --accent-soft:rgba(168,54,204,.14);
+    --ok:#2DBDA3; --ok-2:#249782; --warn:#f59e0b; --danger:#ef4444;
+    --mono:'JetBrains Mono','Courier New',monospace;
+    --radius:10px; --radius-sm:7px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(168,54,204,.10), transparent 60%),
+      linear-gradient(180deg,#0d1521,#0F1824);
+    color:var(--txt);
+    font-family:'Public Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    font-size:14px; line-height:1.5;
+    display:grid; grid-template-rows:auto 1fr auto; height:100vh; overflow:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+  body::before{
+    content:""; position:fixed; inset:0; z-index:0; pointer-events:none; opacity:.35;
+    background-image:linear-gradient(var(--border) 1px,transparent 1px),linear-gradient(90deg,var(--border) 1px,transparent 1px);
+    background-size:46px 46px; mask-image:radial-gradient(circle at 50% 30%,#000,transparent 85%);
+  }
+
+  /* ─── Header ─── */
+  header{position:relative; z-index:2; display:flex; align-items:center; gap:18px;
+    padding:12px 22px; background:linear-gradient(180deg,rgba(28,46,69,.7),rgba(19,35,55,.55));
+    border-bottom:1px solid var(--border); backdrop-filter:blur(6px)}
+  .brand{display:flex; align-items:center; gap:11px}
+  .brand .logomark{height:30px; width:auto; display:block}
+  /* Wordmark in the Vailient brand primary purple (custom-500 #8b00b3). */
+  .brand .logo{font-family:'Tourney',sans-serif; font-weight:700; font-size:22px; letter-spacing:.5px;
+    color:#8b00b3}
+  .brand .sub{font-size:11px; letter-spacing:.32em; color:var(--txt-3); text-transform:uppercase; font-weight:600}
+  .spacer{flex:1}
+  .pill{display:inline-flex; align-items:center; gap:7px; padding:5px 12px; border-radius:999px;
+    font-size:11.5px; font-weight:600; letter-spacing:.05em; text-transform:uppercase;
+    background:var(--elev); border:1px solid var(--border); color:var(--txt-2)}
+  .pill .dot{width:8px; height:8px; border-radius:50%; background:var(--txt-3)}
+  .pill.ok{color:#bdf3e8; border-color:rgba(45,189,163,.4)} .pill.ok .dot{background:var(--ok); box-shadow:0 0 8px var(--ok)}
+  .pill.warn{color:#ffe2ad; border-color:rgba(245,158,11,.4)} .pill.warn .dot{background:var(--warn); box-shadow:0 0 8px var(--warn)}
+  .pill.bad{color:#ffd1d1; border-color:rgba(239,68,68,.4)} .pill.bad .dot{background:var(--danger); box-shadow:0 0 8px var(--danger)}
+  .clock{font-family:var(--mono); font-size:13px; color:var(--txt-2)}
+
+  /* ─── Header tab toggles ─── */
+  .tabs{display:flex; gap:6px}
+  .tab{appearance:none; cursor:pointer; font-family:inherit; font-size:12px; font-weight:600; letter-spacing:.03em;
+    color:var(--txt-2); background:var(--elev); border:1px solid var(--border); border-radius:7px; padding:6px 12px}
+  .tab:hover{border-color:var(--accent); color:#fff}
+  .tab.active{background:var(--accent-soft); border-color:var(--accent); color:#fff}
+
+  /* ─── Main grid (fixed single page — no page scroll) ─── */
+  main{position:relative; z-index:1; display:grid; grid-template-columns:1fr 360px; gap:14px;
+    padding:14px 16px; overflow:hidden; min-height:0}
+  .card{background:linear-gradient(180deg,rgba(28,46,69,.45),rgba(19,35,55,.92));
+    border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; min-height:0}
+  .card > .hd{display:flex; align-items:center; gap:10px; padding:11px 15px; border-bottom:1px solid var(--border)}
+  .card > .hd h2{margin:0; font-size:12px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; color:var(--txt-2)}
+  .card > .hd .accentbar{width:3px; height:14px; border-radius:2px; background:linear-gradient(var(--accent),var(--accent-2))}
+  .card > .hd .right{margin-left:auto; display:flex; gap:8px; align-items:center}
+  .card > .bd{padding:15px}
+  /* Feed card fills its column height; control card scrolls internally if cramped. */
+  .feedcard{display:flex; flex-direction:column}
+  .controlcard{display:flex; flex-direction:column}
+  .controlcard > .bd{overflow:auto; min-height:0}
+
+  /* ─── Raw feed ─── */
+  .feedwrap{position:relative; flex:1; min-height:0; background:#05080d; overflow:hidden;
+    border-bottom-left-radius:var(--radius); border-bottom-right-radius:var(--radius)}
+  .feedwrap img{width:100%; height:100%; object-fit:contain; display:none}
+  .feedwrap .placeholder{position:absolute; inset:0; display:flex; flex-direction:column; gap:8px;
+    align-items:center; justify-content:center; color:var(--txt-3); text-align:center; padding:20px}
+  .feedwrap .placeholder .big{font-size:13px; letter-spacing:.22em; text-transform:uppercase; color:var(--txt-2); font-weight:600}
+  .feedwrap .scan{position:absolute; left:0; right:0; top:0; height:2px;
+    background:linear-gradient(90deg,transparent,var(--accent),transparent); opacity:0}
+  .feedwrap.live .scan{animation:scan 3.2s linear infinite; opacity:.7}
+  @keyframes scan{0%{top:0}100%{top:100%}}
+  .live-badge{position:absolute; top:10px; left:10px; display:flex; align-items:center; gap:7px;
+    padding:5px 11px; border-radius:6px; background:rgba(5,8,13,.66); border:1px solid var(--border-2);
+    font-family:var(--mono); font-size:11px; letter-spacing:.12em; color:var(--txt-2)}
+  .live-badge b{color:var(--danger)} .feedwrap.live .live-badge b{color:var(--ok)}
+  .feedmeta{position:absolute; bottom:10px; left:12px; font-family:var(--mono); font-size:11px;
+    color:var(--txt-2); background:rgba(5,8,13,.55); padding:3px 9px; border-radius:5px}
+
+  /* ─── Mini drone-centered mission map (overlay, bottom-right of the feed) ─── */
+  .minimap{position:absolute; bottom:10px; right:10px; width:204px; height:136px;
+    background:rgba(5,8,13,.5); border:1px solid var(--border-2); border-radius:8px;
+    backdrop-filter:blur(2px); pointer-events:none; z-index:3}
+  @media (max-width:760px){ .minimap{width:140px; height:96px} }
+
+  /* ─── Docked popup drawers (Mission / Graph / RTSP) ─── */
+  .backdrop{position:fixed; inset:0; z-index:40; background:rgba(3,6,12,.55);
+    opacity:0; pointer-events:none; transition:opacity .2s ease}
+  .backdrop.open{opacity:1; pointer-events:auto}
+  .drawer{position:fixed; top:0; right:0; height:100vh; width:430px; max-width:94vw; z-index:50;
+    display:flex; flex-direction:column; background:linear-gradient(180deg,#16273c,#0f1c2c);
+    border-left:1px solid var(--border-2); box-shadow:-18px 0 50px rgba(0,0,0,.5);
+    transform:translateX(102%); transition:transform .24s cubic-bezier(.2,.7,.2,1)}
+  .drawer.open{transform:translateX(0)}
+  .drawer.drawer-wide{width:700px}
+  .drawerhd{display:flex; align-items:center; gap:10px; padding:13px 16px; border-bottom:1px solid var(--border)}
+  .drawerhd h2{margin:0; font-size:13px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--txt)}
+  .drawerhd .drawerx{margin-left:auto; cursor:pointer; background:var(--elev); border:1px solid var(--border);
+    color:var(--txt-2); width:30px; height:30px; border-radius:7px; font-size:14px; line-height:1}
+  .drawerhd .drawerx:hover{border-color:var(--danger); color:#fff}
+  .drawerbd{flex:1; min-height:0; overflow:auto; padding:15px}
+
+  /* ─── Mission graph ─── */
+  .graphwrap{position:relative; border-radius:8px; overflow:hidden}
+  #graph{display:block; width:100%; height:300px; border-radius:8px;
+    touch-action:none; user-select:none; cursor:grab; background:
+    radial-gradient(700px 300px at 50% 120%,rgba(168,54,204,.07),transparent 70%),#0b1320}
+  #graph.grabbing{cursor:grabbing}
+  .graphctl{position:absolute; top:8px; right:8px; display:flex; gap:5px}
+  .graphctl button{width:28px; height:28px; display:flex; align-items:center; justify-content:center;
+    border:1px solid var(--border-2); background:rgba(11,19,32,.72); color:var(--txt-2);
+    border-radius:6px; cursor:pointer; font-size:15px; font-family:var(--mono); line-height:1; padding:0}
+  .graphctl button:hover{border-color:var(--accent); color:#fff}
+  .graphhint{position:absolute; bottom:8px; right:10px; font-family:var(--mono); font-size:10px;
+    color:var(--txt-3); background:rgba(11,19,32,.5); padding:2px 7px; border-radius:5px; pointer-events:none}
+  .timeline{display:flex; gap:5px; flex-wrap:wrap; margin-bottom:11px}
+  .tl-chip{font-family:var(--mono); font-size:11px; padding:4px 9px; border-radius:5px;
+    background:var(--elev); border:1px solid var(--border); color:var(--txt-2); white-space:nowrap}
+  .tl-chip.done{background:rgba(45,189,163,.16); border-color:rgba(45,189,163,.45); color:#bdf3e8}
+  .tl-chip.active{background:rgba(168,54,204,.22); border-color:var(--accent); color:#fff; box-shadow:0 0 10px rgba(168,54,204,.4)}
+  .legend{display:flex; gap:16px; flex-wrap:wrap; font-size:11.5px; color:var(--txt-2); padding-top:10px}
+  .legend i{display:inline-block; width:11px; height:11px; border-radius:3px; margin-right:6px; vertical-align:-1px}
+
+  /* ─── Forms / controls ─── */
+  label.fl{display:block; font-size:11px; text-transform:uppercase; letter-spacing:.12em; color:var(--txt-3); margin:0 0 5px}
+  select,input[type=text],input[type=number]{width:100%; background:var(--bg); border:1px solid var(--border);
+    color:var(--txt); border-radius:var(--radius-sm); padding:9px 11px; font-size:14px; font-family:inherit}
+  select:focus,input:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft)}
+  .addrow{display:grid; grid-template-columns:1.1fr .9fr auto; gap:9px; align-items:end}
+  .btnrow{display:flex; gap:9px; flex-wrap:wrap}
+  button.btn{appearance:none; cursor:pointer; border:1px solid var(--border-2); background:var(--elev);
+    color:var(--txt); padding:9px 15px; border-radius:var(--radius-sm); font-size:13px; font-weight:600;
+    font-family:inherit; transition:all .15s ease; letter-spacing:.02em}
+  button.btn:hover:not(:disabled){border-color:var(--accent); color:#fff}
+  button.btn:disabled{opacity:.38; cursor:not-allowed}
+  button.btn.primary{background:linear-gradient(180deg,var(--accent),var(--accent-2)); border-color:transparent; color:#fff; box-shadow:0 4px 14px rgba(139,0,179,.35)}
+  button.btn.primary:hover:not(:disabled){filter:brightness(1.12)}
+  button.btn.ghost{background:transparent}
+  button.btn.ok{border-color:rgba(45,189,163,.5); color:#bdf3e8}
+  button.btn.ok:hover:not(:disabled){background:rgba(45,189,163,.14); border-color:var(--ok); color:#fff}
+  button.btn.danger{border-color:rgba(239,68,68,.5); color:#ffc4c4}
+  button.btn.danger:hover:not(:disabled){background:rgba(239,68,68,.14); border-color:var(--danger); color:#fff}
+  button.btn.sm{padding:6px 11px; font-size:12px}
+
+  /* step list */
+  .steps{list-style:none; margin:13px 0 0; padding:0; display:flex; flex-direction:column; gap:6px; max-height:220px; overflow:auto}
+  .steps li{display:flex; align-items:center; gap:10px; background:var(--bg); border:1px solid var(--border);
+    border-radius:var(--radius-sm); padding:7px 10px}
+  .steps li.active{border-color:var(--accent); background:rgba(168,54,204,.1)}
+  .steps li.done{opacity:.6}
+  .steps .num{font-family:var(--mono); font-size:11px; color:var(--txt-3); width:20px}
+  .steps .act{font-family:var(--mono); font-weight:600; letter-spacing:.04em}
+  .steps .act.LEFT,.steps .act.RIGHT{color:#C066DB}
+  .steps .act.UP{color:var(--ok)} .steps .act.DOWN{color:var(--warn)}
+  .steps .act.HOVER{color:var(--txt-2)} .steps .act.LAND{color:#ffc4c4}
+  .steps .val{font-family:var(--mono); color:var(--txt-2); font-size:13px}
+  .steps .sp{flex:1}
+  .steps .x{cursor:pointer; color:var(--txt-3); font-family:var(--mono); padding:0 4px}
+  .steps .x:hover{color:var(--danger)}
+  .empty{color:var(--txt-3); font-size:12.5px; padding:14px 4px; text-align:center}
+  .chk{display:inline-flex; align-items:center; gap:7px; color:var(--txt-2); font-size:12.5px; cursor:pointer}
+  .sweeprow{display:flex; align-items:center; gap:10px; margin-top:13px}
+  .sweeprow input[type=range]{flex:1; accent-color:var(--accent); height:4px}
+  .sweepval{font-family:var(--mono); font-size:12px; color:var(--txt-2); min-width:64px; text-align:right}
+  .hintline{margin-top:9px; font-size:11px; color:var(--txt-3); line-height:1.45}
+  .steps .act.ALIGN{color:#f59e0b}
+
+  /* status / telemetry */
+  .statusline{display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap}
+  .mstatus{font-family:var(--mono); font-weight:600; letter-spacing:.05em; padding:6px 12px; border-radius:6px;
+    background:var(--elev); border:1px solid var(--border); font-size:13px}
+  .mstatus.run{color:#bdf3e8; border-color:rgba(45,189,163,.5); background:rgba(45,189,163,.1)}
+  .mstatus.idle{color:var(--txt-2)}
+  .vs{font-family:var(--mono); font-size:12px; padding:5px 10px; border-radius:6px; border:1px solid var(--border); color:var(--txt-3)}
+  .vs.on{color:#bdf3e8; border-color:rgba(45,189,163,.5); background:rgba(45,189,163,.1)}
+  .progress{height:9px; border-radius:6px; background:var(--bg); border:1px solid var(--border); overflow:hidden; margin-bottom:6px}
+  .progress > span{display:block; height:100%; width:0; border-radius:6px;
+    background:linear-gradient(90deg,var(--accent-2),var(--accent),var(--ok)); transition:width .4s ease}
+  .pct{font-family:var(--mono); font-size:12px; color:var(--txt-2); text-align:right}
+  .readouts{display:grid; grid-template-columns:1fr 1fr 1fr; gap:1px; background:var(--border); border:1px solid var(--border);
+    border-radius:var(--radius-sm); overflow:hidden; margin-top:13px}
+  .ro{background:var(--panel); padding:9px 11px}
+  .ro .k{font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--txt-3)}
+  .ro .v{font-family:var(--mono); font-size:15px; color:var(--txt); margin-top:3px}
+  .ro .v small{font-size:11px; color:var(--txt-3)}
+
+  .urlbox{display:flex; align-items:center; gap:8px; margin-top:11px; background:var(--bg); border:1px dashed var(--border-2);
+    border-radius:var(--radius-sm); padding:9px 11px; font-family:var(--mono); font-size:12.5px; color:var(--ok); word-break:break-all}
+  .urlbox.off{color:var(--txt-3); border-style:solid; border-color:var(--border)}
+  .copy{margin-left:auto; cursor:pointer; color:var(--txt-3); font-size:11px; white-space:nowrap}
+  .copy:hover{color:var(--accent)}
+
+  /* docked logs */
+  .logdock{position:relative; z-index:3; background:linear-gradient(180deg,#0c1420,#0a111b); border-top:1px solid var(--border)}
+  .logdock .bar{display:flex; align-items:center; gap:10px; padding:8px 18px; cursor:pointer; user-select:none}
+  .logdock .bar h3{margin:0; font-size:11.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--txt-2); font-weight:700}
+  .logdock .bar .count{font-family:var(--mono); font-size:11px; color:var(--txt-3)}
+  .logdock .bar .chev{margin-left:auto; color:var(--txt-3); font-size:12px}
+  .logbody{height:168px; overflow:auto; padding:4px 0 8px; font-family:var(--mono); font-size:12px; transition:height .22s ease}
+  .logdock.collapsed .logbody{height:0; padding:0; overflow:hidden}
+  .logrow{display:grid; grid-template-columns:78px 22px 1fr; gap:8px; padding:2px 18px}
+  .logrow:hover{background:rgba(168,54,204,.06)}
+  .logrow .t{color:var(--txt-3)} .logrow .msg{white-space:pre-wrap; word-break:break-word; color:var(--txt-2)}
+  .logrow.I .lv{color:var(--ok)} .logrow.W .lv{color:var(--warn)} .logrow.E .lv{color:var(--danger)}
+  .logrow.W .msg{color:#ffe2ad} .logrow.E .msg{color:#ffd1d1}
+
+  ::-webkit-scrollbar{width:9px; height:9px}
+  ::-webkit-scrollbar-track{background:var(--bg-2)}
+  ::-webkit-scrollbar-thumb{background:var(--border); border-radius:5px}
+  ::-webkit-scrollbar-thumb:hover{background:var(--border-2)}
+  @media (max-width:820px){ main{grid-template-columns:1fr; grid-template-rows:1.4fr 1fr} }
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand"><img class="logomark" src="logomark.png" alt="Vailient" /><span class="logo">VAILIENT</span><span class="sub">Rack Scan Missioning</span></div>
+    <div class="spacer"></div>
+    <nav class="tabs">
+      <button class="tab" id="tabMission" data-panel="panelMission">Mission</button>
+      <button class="tab" id="tabGraph" data-panel="panelGraph">Graph</button>
+      <button class="tab" id="tabRtsp" data-panel="panelRtsp">RTSP</button>
+    </nav>
+    <span class="pill" id="missionPill"><span class="dot"></span><span id="missionPillTxt">IDLE</span></span>
+    <span class="pill" id="connPill"><span class="dot"></span><span id="connTxt">connecting…</span></span>
+    <span class="clock" id="clock">--:--:--</span>
+  </header>
+
+  <main>
+    <!-- Live feed (with drone-centered mini map) -->
+    <div class="card feedcard">
+      <div class="hd"><span class="accentbar"></span><h2>Live Raw Feed</h2>
+        <div class="right"><span class="pill" id="rtspMini"><span class="dot"></span>RTSP OFF</span></div>
+      </div>
+      <div class="feedwrap" id="feedwrap">
+        <div class="scan"></div>
+        <img id="feed" alt="raw camera feed" />
+        <div class="placeholder" id="feedPlaceholder">
+          <div class="big">Awaiting Camera</div>
+          <div>Connect the aircraft and start the dashboard from the mobile app.</div>
+        </div>
+        <div class="live-badge"><b>●</b> <span id="liveTxt">NO SIGNAL</span></div>
+        <div class="feedmeta" id="feedMeta">— fps · —×—</div>
+        <canvas id="minimap" class="minimap" title="Mission map · drone-centered"></canvas>
+      </div>
+    </div>
+
+    <!-- Flight control stays on the main screen -->
+    <div class="card controlcard">
+      <div class="hd"><span class="accentbar"></span><h2>Flight Control</h2></div>
+      <div class="bd">
+        <div class="statusline">
+          <span class="mstatus idle" id="mStatus">IDLE</span>
+          <span class="vs" id="vsState">VS OFF</span>
+          <span class="copy" id="mElapsed" style="margin-left:auto">step —</span>
+        </div>
+        <div class="progress"><span id="mBar"></span></div>
+        <div class="pct">step <span id="mStep">0</span> / <span id="mTotal">0</span></div>
+
+        <div class="btnrow" style="margin-top:13px">
+          <button class="btn ok" id="btnTakeoff">Take Off</button>
+          <button class="btn" id="btnEnableVS">Enable VS</button>
+          <button class="btn ghost" id="btnDisableVS">Disable VS</button>
+        </div>
+        <div class="btnrow" style="margin-top:9px">
+          <button class="btn primary" id="btnStart">Start Mission</button>
+          <button class="btn" id="btnStop">Stop</button>
+          <button class="btn danger" id="btnLand">Land</button>
+        </div>
+
+        <div class="readouts">
+          <div class="ro"><div class="k">Altitude</div><div class="v" id="roAlt">—<small> m</small></div></div>
+          <div class="ro"><div class="k">Battery</div><div class="v" id="roBat">—<small> %</small></div></div>
+          <div class="ro"><div class="k">Ground Spd</div><div class="v" id="roSpd">—<small> m/s</small></div></div>
+          <div class="ro"><div class="k">Motors</div><div class="v" id="roMot">—</div></div>
+          <div class="ro"><div class="k">Roll/Pitch</div><div class="v" id="roRp" style="font-size:12px">—</div></div>
+          <div class="ro"><div class="k">Vertical</div><div class="v" id="roVz" style="font-size:12px">—</div></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ─── Docked popup drawers ─── -->
+  <div class="backdrop" id="backdrop"></div>
+
+  <aside class="drawer" id="panelMission">
+    <div class="drawerhd"><h2>Mission Builder</h2><span class="copy" id="planMeta">0 steps</span><button class="drawerx" data-close title="Close">✕</button></div>
+    <div class="drawerbd">
+      <div class="addrow">
+        <div>
+          <label class="fl" for="stepAction">Action</label>
+          <select id="stepAction">
+            <option value="LEFT">Sweep Left (m)</option>
+            <option value="RIGHT">Sweep Right (m)</option>
+            <option value="UP">Climb Up (m)</option>
+            <option value="DOWN">Descend (m)</option>
+            <option value="HOVER">Hover (s)</option>
+            <option value="ALIGN">ArUco Align (marker #)</option>
+            <option value="LAND">Land</option>
+          </select>
+        </div>
+        <div>
+          <label class="fl" id="valLabel" for="stepValue">Metres</label>
+          <input type="number" id="stepValue" value="1" min="0.1" step="0.1" />
+        </div>
+        <button class="btn primary" id="btnAddStep">Add</button>
+      </div>
+      <ul class="steps" id="stepList"></ul>
+      <div class="empty" id="stepEmpty">No steps yet — add Sweep / Climb / ArUco Align / Land steps to build a mission.</div>
+      <div class="sweeprow">
+        <label class="fl" for="sweepRange" style="margin:0">Sweep speed</label>
+        <input type="range" id="sweepRange" min="0.05" max="1" step="0.05" value="0.3" />
+        <span class="sweepval" id="sweepVal">0.30 m/s</span>
+      </div>
+      <div class="hintline">ArUco Align re-centers on a marker before the next step — GPS-free indoor positioning that corrects sweep drift. Sweep distance = speed × time (open-loop).</div>
+      <div class="btnrow" style="margin-top:12px; align-items:center">
+        <label class="chk"><input type="checkbox" id="loopChk" /> Loop mission</label>
+        <span class="spacer" style="flex:1"></span>
+        <button class="btn ghost sm" id="btnExport">Export</button>
+        <button class="btn ghost sm" id="btnImport">Import</button>
+        <button class="btn ghost sm" id="btnClear">Clear</button>
+        <button class="btn ghost sm" id="btnDemo">Demo</button>
+        <input type="file" id="fileImport" accept=".json,application/json" style="display:none" />
+      </div>
+    </div>
+  </aside>
+
+  <aside class="drawer drawer-wide" id="panelGraph">
+    <div class="drawerhd"><h2>Mission Graph</h2><span class="clock" id="graphMeta" style="font-size:11.5px">no mission</span><button class="drawerx" data-close title="Close">✕</button></div>
+    <div class="drawerbd">
+      <div class="timeline" id="timeline"></div>
+      <div class="graphwrap">
+        <canvas id="graph"></canvas>
+        <div class="graphctl">
+          <button id="gzin" title="Zoom in">+</button>
+          <button id="gzout" title="Zoom out">−</button>
+          <button id="gfit" title="Fit mission to view">⤢</button>
+        </div>
+        <div class="graphhint">drag to pan · scroll / pinch to zoom</div>
+      </div>
+      <div class="legend">
+        <span><i style="background:#2DBDA3"></i>Done</span>
+        <span><i style="background:#a836cc"></i>Active step</span>
+        <span><i style="background:#233A57"></i>Pending</span>
+        <span><i style="background:#f59e0b"></i>Drone</span>
+        <span><i style="background:transparent;border:2px solid #f59e0b;border-radius:50%"></i>ArUco align</span>
+      </div>
+    </div>
+  </aside>
+
+  <aside class="drawer" id="panelRtsp">
+    <div class="drawerhd"><h2>RTSP Stream</h2><button class="drawerx" data-close title="Close">✕</button></div>
+    <div class="drawerbd">
+      <div class="btnrow">
+        <button class="btn primary" id="btnRtsp">Start RTSP Stream</button>
+        <span class="copy" id="rtspClients" style="align-self:center">0 clients</span>
+      </div>
+      <div class="urlbox off" id="rtspUrlBox">
+        <span id="rtspUrl">stream offline</span>
+        <span class="copy" id="rtspCopy">copy</span>
+      </div>
+    </div>
+  </aside>
+
+  <div class="logdock" id="logdock">
+    <div class="bar" id="logbar">
+      <h3>Live Logs</h3><span class="count" id="logCount">0 entries</span>
+      <span class="chev" id="logChev">▼ hide</span>
+    </div>
+    <div class="logbody" id="logbody"></div>
+  </div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const safeParse = s => { try { return JSON.parse(s); } catch (_) { return null; } };
+const wsUrl = (location.protocol==="https:"?"wss://":"ws://") + location.host + "/ws";
+let ws=null, frameUrl=null, frameCount=0, lastFps=performance.now(), lastFrameW=0, lastFrameH=0;
+let tel={}, rtspState={running:false,url:null,clients:0}, autoScroll=true;
+let builder=[];                 // local plan: [{action, value}]
+let sweepSpeed=0.3;             // m/s, mirrors RackFlightController default; updated from telemetry
+let sweepDragging=false;        // true while the operator drags the sweep-speed slider
+
+/* clock */
+setInterval(()=>{ const d=new Date();
+  $("clock").textContent=[d.getHours(),d.getMinutes(),d.getSeconds()].map(n=>String(n).padStart(2,"0")).join(":"); },1000);
+
+/* ── WebSocket ── */
+function setConn(t,c){ $("connPill").className="pill "+(c||""); $("connTxt").textContent=t; }
+function connect(){
+  setConn("connecting…","warn");
+  ws=new WebSocket(wsUrl); ws.binaryType="blob";
+  ws.onopen=()=>setConn("connected","ok");
+  ws.onmessage=ev=>{ if(typeof ev.data==="string"){ try{ apply(JSON.parse(ev.data)); }catch(e){console.warn(e);} } else renderFrame(ev.data); };
+  ws.onclose=()=>{ setConn("disconnected · retrying","bad"); setTimeout(connect,1500); };
+  ws.onerror=()=>{ try{ws.close();}catch(_){} };
+}
+function send(cmd,extra){ if(!ws||ws.readyState!==WebSocket.OPEN){ console.warn("ws not open"); return; } ws.send(JSON.stringify(Object.assign({cmd},extra||{}))); }
+
+/* ── Raw feed ── */
+function renderFrame(blob){
+  const url=URL.createObjectURL(blob), img=$("feed");
+  img.onload=()=>{ if(frameUrl) URL.revokeObjectURL(frameUrl); frameUrl=url;
+    img.style.display="block"; $("feedPlaceholder").style.display="none";
+    $("feedwrap").classList.add("live"); $("liveTxt").textContent="LIVE"; };
+  img.onerror=()=>URL.revokeObjectURL(url);
+  img.src=url;
+  frameCount++; const now=performance.now();
+  if(now-lastFps>=1000){ const fps=(frameCount*1000/(now-lastFps)).toFixed(0);
+    $("feedMeta").textContent=`${fps} fps · ${lastFrameW||"—"}×${lastFrameH||"—"}`; frameCount=0; lastFps=now; }
+}
+
+/* ── Apply telemetry ── */
+function fmt(n,d){ return (n==null||Number.isNaN(n))?"—":Number(n).toFixed(d); }
+function apply(d){
+  tel=d.telemetry||{};
+  if(d.frame){ lastFrameW=d.frame.w; lastFrameH=d.frame.h; }
+  if(typeof tel.sweepSpeedMps==="number" && tel.sweepSpeedMps>0 && !sweepDragging){
+    sweepSpeed=tel.sweepSpeedMps;
+    $("sweepRange").value=sweepSpeed; $("sweepVal").textContent=sweepSpeed.toFixed(2)+" m/s";
+  }
+  // readouts
+  $("roAlt").innerHTML=fmt(tel.altitudeM,2)+'<small> m</small>';
+  $("roBat").innerHTML=fmt(d.battery,0)+'<small> %</small>';
+  const gs=Math.hypot(tel.velocityX||0,tel.velocityY||0);
+  $("roSpd").innerHTML=fmt(gs,2)+'<small> m/s</small>';
+  $("roMot").textContent=tel.motorsOn?"ARMED":"off";
+  $("roRp").textContent=(tel.rollPitchControlMode||"—");
+  $("roVz").textContent=(tel.verticalControlMode||"—");
+  // VS + mission
+  const vsOn=!!tel.isVSEnabled, running=!!tel.missionRunning;
+  $("vsState").textContent=vsOn?"VS ON":"VS OFF"; $("vsState").className="vs "+(vsOn?"on":"");
+  $("mStatus").textContent=running?(tel.stateName||"RUNNING"):"IDLE";
+  $("mStatus").className="mstatus "+(running?"run":"idle");
+  $("missionPillTxt").textContent=running?"MISSION RUNNING":"IDLE";
+  $("missionPill").className="pill "+(running?"ok":"");
+  const total=tel.missionStepCount||0, cur=(tel.missionCurrentStep==null?-1:tel.missionCurrentStep);
+  $("mTotal").textContent=total; $("mStep").textContent=cur<0?0:cur+1;
+  $("mBar").style.width=(total>0?Math.round(((cur<0?0:cur+ (running?0.5:0))/total)*100):0)+"%";
+  if(running && tel.stateName==="ALIGN"){
+    const c = tel.detected ? (tel.alignCentered ? "· CENTERED" : "· centering") : "· no marker";
+    $("mElapsed").textContent = `ALIGN #${tel.currentTargetId|0} · x ${fmt(tel.offsetX,2)} · y ${fmt(tel.offsetY,2)} ${c}`;
+  } else {
+    $("mElapsed").textContent = running&&cur>=0 ? `running step ${cur+1}` : "step —";
+  }
+  // button gating
+  $("btnEnableVS").disabled=vsOn;
+  $("btnDisableVS").disabled=!vsOn;
+  $("btnStart").disabled=!vsOn||running||builder.length===0;
+  $("btnStop").disabled=!running;
+  // active mission step source: when running use the executor's loaded plan.
+  // RackScanTelemetry embeds missionStepsJson as raw JSON, so after parsing the
+  // outer message it is ALREADY an array — don't JSON.parse it again.
+  if(running){
+    const ms=tel.missionStepsJson;
+    activeSteps = Array.isArray(ms) ? ms : (typeof ms==="string" ? safeParse(ms) : null);
+  } else activeSteps=null;
+  syncPlan();                       // recompute cached path / reframe only if the plan changed
+  renderTimeline(running?cur:-1);
+  if(d.rtsp) applyRtsp(d.rtsp);
+  if(d.logs) applyLogs(d.logs);
+}
+let activeSteps=null;
+// Cached, derived plan geometry — recomputed only on plan change (not per frame).
+let cachedSteps=[], cachedPts=[{x:0,y:0}];
+
+function applyRtsp(r){
+  rtspState=r; const on=!!r.running;
+  $("btnRtsp").textContent=on?"Stop RTSP Stream":"Start RTSP Stream";
+  $("btnRtsp").className="btn "+(on?"danger":"primary");
+  $("rtspClients").textContent=(r.clients||0)+" clients";
+  const m=$("rtspMini"); m.className="pill "+(on?"ok":""); m.innerHTML='<span class="dot"></span>'+(on?"RTSP LIVE":"RTSP OFF");
+  const box=$("rtspUrlBox");
+  if(on&&r.url){ box.classList.remove("off"); $("rtspUrl").textContent=r.url; }
+  else{ box.classList.add("off"); $("rtspUrl").textContent="stream offline"; }
+}
+
+/* ── Logs ── */
+let lastLogTs=0;
+function applyLogs(logs){
+  $("logCount").textContent=logs.length+" entries";
+  const fresh=logs.filter(l=>l.t>lastLogTs); if(!fresh.length) return;
+  lastLogTs=logs[logs.length-1].t;
+  const body=$("logbody");
+  for(const l of fresh){
+    const d=new Date(l.t), tt=[d.getHours(),d.getMinutes(),d.getSeconds()].map(n=>String(n).padStart(2,"0")).join(":");
+    const row=document.createElement("div"); row.className="logrow "+l.l;
+    row.innerHTML=`<span class="t">${tt}</span><span class="lv">${l.l}</span><span class="msg"></span>`;
+    row.querySelector(".msg").textContent=l.msg; body.appendChild(row);
+  }
+  while(body.children.length>300) body.removeChild(body.firstChild);
+  if(autoScroll) body.scrollTop=body.scrollHeight;
+}
+$("logbody").addEventListener("scroll",()=>{ const b=$("logbody"); autoScroll=b.scrollTop+b.clientHeight>=b.scrollHeight-24; });
+$("logbar").addEventListener("click",()=>{ const c=$("logdock").classList.toggle("collapsed"); $("logChev").textContent=c?"▲ show":"▼ hide"; });
+
+/* ── Step builder ── */
+// LEFT/RIGHT/UP/DOWN are expressed in metres in the UI; HOVER in seconds; LAND none.
+// LEFT/RIGHT distance is open-loop: the executor is time-based, so on the wire we
+// convert metres -> seconds with the live sweep speed (distance = speed x time).
+function fmtVal(v){ const n=Math.round(v*100)/100; return Number.isInteger(n)?String(n):n.toFixed(2); }
+function maxSweepMeters(){ return Math.max(0.1, Math.round(30*sweepSpeed*10)/10); } // executor caps LEFT/RIGHT at 30 s
+function valText(s){
+  if(s.action==="LAND") return "";
+  if(s.action==="ALIGN") return "#"+s.value;       // marker id
+  if(s.action==="HOVER") return fmtVal(s.value)+"s";
+  return fmtVal(s.value)+"m";                       // LEFT/RIGHT/UP/DOWN
+}
+function stepLabel(s){ const t=valText(s); return s.action + (t? " "+t : ""); }
+function refreshValLabel(){ const a=$("stepAction").value, inp=$("stepValue");
+  if(a==="ALIGN"){ $("valLabel").textContent="Marker ID"; inp.disabled=false; inp.min=0; inp.step=1; inp.value=Math.max(0,Math.round(+inp.value||0)); }
+  else if(a==="HOVER"){ $("valLabel").textContent="Seconds"; inp.disabled=false; inp.min=0.1; inp.step=0.1; }
+  else if(a==="LAND"){ $("valLabel").textContent="—"; inp.disabled=true; }
+  else { $("valLabel").textContent="Metres"; inp.disabled=false; inp.min=0.1; inp.step=0.1; }
+}
+$("stepAction").addEventListener("change",refreshValLabel);
+$("btnAddStep").onclick=()=>{
+  const a=$("stepAction").value;
+  let v=0;
+  if(a==="LAND"){ v=0; }
+  else if(a==="ALIGN"){ v=Math.max(0, Math.round(parseFloat($("stepValue").value)||0)); }  // marker id (0 allowed)
+  else {
+    v=parseFloat($("stepValue").value); if(!(v>0)) return;
+    if(a==="UP"||a==="DOWN") v=Math.min(v,5);
+    else if(a==="HOVER") v=Math.min(v,60);
+    else v=Math.min(v, maxSweepMeters());   // LEFT/RIGHT metres, bounded by the 30 s executor cap
+  }
+  builder.push({action:a,value:v}); renderBuilder();
+};
+$("btnClear").onclick=()=>{ builder=[]; renderBuilder(); };
+$("btnDemo").onclick=()=>{ builder=[
+  {action:"ALIGN",value:0},{action:"RIGHT",value:1.2},{action:"UP",value:0.5},
+  {action:"ALIGN",value:0},{action:"LEFT",value:1.2},{action:"HOVER",value:2},{action:"LAND",value:0}
+]; renderBuilder(); };
+function removeStep(i){ builder.splice(i,1); renderBuilder(); }
+function renderBuilder(){
+  const ul=$("stepList"); ul.innerHTML="";
+  $("stepEmpty").style.display=builder.length?"none":"block";
+  $("planMeta").textContent=builder.length+" step"+(builder.length===1?"":"s");
+  builder.forEach((s,i)=>{
+    const li=document.createElement("li");
+    li.innerHTML=`<span class="num">${i+1}</span><span class="act ${s.action}">${s.action}</span>`+
+      `<span class="val">${valText(s)}</span><span class="sp"></span>`+
+      `<span class="x" title="remove">✕</span>`;
+    li.querySelector(".x").onclick=()=>removeStep(i);
+    ul.appendChild(li);
+  });
+  $("btnStart").disabled=!(tel.isVSEnabled)||!!tel.missionRunning||builder.length===0;
+  syncPlan();                       // builder edits change the plan → refresh cache / reframe
+  if(!tel.missionRunning) renderTimeline(-1);
+}
+function toWire(s){ const o={action:s.action};
+  if(s.action==="UP"||s.action==="DOWN") o.distance=s.value;                       // metres
+  else if(s.action==="LEFT"||s.action==="RIGHT") o.seconds = sweepSpeed>0 ? s.value/sweepSpeed : s.value; // metres -> seconds
+  else if(s.action==="ALIGN") o.markerId = s.value;                                // marker id
+  else if(s.action!=="LAND") o.seconds=s.value;                                    // HOVER seconds
+  return o; }
+
+/* ── Timeline + graph ── */
+// Normalize to UI units: LEFT/RIGHT/UP/DOWN in metres, HOVER in seconds, ALIGN = marker id.
+function currentSteps(){
+  if(activeSteps) return activeSteps.map(o=>{
+    const a=(o.action||"").toUpperCase();
+    let value;
+    if(a==="UP"||a==="DOWN") value = o.distance!=null?o.distance:0;
+    else if(a==="LEFT"||a==="RIGHT") value = (o.seconds!=null?o.seconds:0)*sweepSpeed; // seconds -> metres
+    else if(a==="ALIGN") value = o.markerId!=null?o.markerId:0;
+    else value = o.seconds!=null?o.seconds:0;                                         // HOVER seconds
+    return {action:a, value};
+  });
+  return builder;
+}
+function renderTimeline(curIdx){
+  const steps=cachedSteps, tl=$("timeline"); tl.innerHTML="";
+  steps.forEach((s,i)=>{ const c=document.createElement("span");
+    c.className="tl-chip "+(curIdx>=0&&i<curIdx?"done":"")+(i===curIdx?" active":"");
+    c.textContent=(i+1)+" "+stepLabel(s); tl.appendChild(c); });
+  $("graphMeta").textContent=steps.length?(steps.length+" steps · "+(activeSteps?"executing":"plan")):"no mission";
+}
+
+const cv=$("graph"), cx=cv.getContext("2d");
+const MIN_SCALE=3, MAX_SCALE=600;          // px per metre
+// World→screen view transform. world: x=lateral m, y=altitude m (up +).
+// screenX = x*scale + offX ; screenY = -y*scale + offY
+let view={scale:60, offX:0, offY:0};
+let lastSig=null;                          // plan signature → reframe only on plan change
+let userAdjusted=false;                    // true once the operator pans/zooms; suppresses resize re-fit
+const pointers=new Map();                  // active pointers for pan / pinch
+let pinchPrev=null;                         // {dist, cx, cy}
+
+const mm=$("minimap"), mmx=mm.getContext("2d");
+const MM_SCALE=46;                          // px per metre in the drone-centered mini map
+let graphOpen=false;                        // full mission-graph drawer visible → draw it
+
+function fitCanvas(){ const r=cv.getBoundingClientRect(), dpr=window.devicePixelRatio||1;
+  cv.width=Math.max(1,r.width*dpr); cv.height=Math.max(1,r.height*dpr); cx.setTransform(dpr,0,0,dpr,0,0); }
+function fitMini(){ const r=mm.getBoundingClientRect(), dpr=window.devicePixelRatio||1;
+  mm.width=Math.max(1,r.width*dpr); mm.height=Math.max(1,r.height*dpr); mmx.setTransform(dpr,0,0,dpr,0,0); }
+function canvasSize(){ const r=cv.getBoundingClientRect(); return {W:r.width, H:r.height}; }
+function worldToScreen(p){ return {X:p.x*view.scale+view.offX, Y:-p.y*view.scale+view.offY}; }
+function screenToWorld(sx,sy){ return {x:(sx-view.offX)/view.scale, y:(view.offY-sy)/view.scale}; }
+
+// Dead-reckon a 2D path (x=lateral metres, y=altitude metres) from the steps.
+function pathPoints(steps){
+  const pts=[{x:0,y:0,land:false}]; let x=0,y=0;
+  for(const s of steps){
+    if(s.action==="RIGHT") x+=s.value;       // metres
+    else if(s.action==="LEFT") x-=s.value;   // metres
+    else if(s.action==="UP") y+=s.value;
+    else if(s.action==="DOWN") y-=s.value;
+    // ALIGN / HOVER / LAND don't translate the plan (ALIGN re-centers in place).
+    pts.push({x,y,land:s.action==="LAND",hover:s.action==="HOVER",align:s.action==="ALIGN"});
+  }
+  return pts;
+}
+function bounds(pts){ let a=Infinity,b=-Infinity,c=Infinity,d=-Infinity;
+  for(const p of pts){ if(p.x<a)a=p.x; if(p.x>b)b=p.x; if(p.y<c)c=p.y; if(p.y>d)d=p.y; }
+  return {minX:a,maxX:b,minY:c,maxY:d}; }
+
+// Recompute cached geometry ONLY when the plan changes; reframe to fit on change.
+// Called from apply()/renderBuilder() (event-driven), never per animation frame —
+// keeps the rAF loop allocation-free even for long missions.
+function syncPlan(){
+  const steps=currentSteps();
+  const sig=steps.map(s=>s.action+":"+s.value).join("|");
+  if(sig===lastSig) return;
+  cachedSteps=steps; cachedPts=pathPoints(steps);
+  if(fitView()) lastSig=sig;             // only lock the signature once framed at a real canvas size
+}
+
+/** Frame the whole cached mission centered. Returns false if the canvas has no
+ *  layout size yet (caller retries). Clears the manual-adjust flag. */
+function fitView(){
+  if(!cachedSteps.length){ userAdjusted=false; return true; }
+  const {W,H}=canvasSize(); if(W<2||H<2) return false;
+  const bb=bounds(cachedPts);
+  const pad=42, spanX=Math.max(0.6,bb.maxX-bb.minX), spanY=Math.max(0.6,bb.maxY-bb.minY);
+  let sc=Math.min((W-pad*2)/spanX,(H-pad*2)/spanY);
+  sc=Math.max(MIN_SCALE,Math.min(MAX_SCALE,sc));
+  const cxw=(bb.minX+bb.maxX)/2, cyw=(bb.minY+bb.maxY)/2;
+  view.scale=sc; view.offX=W/2-cxw*sc; view.offY=H/2+cyw*sc;
+  userAdjusted=false; return true;
+}
+function zoomAt(factor,sx,sy){
+  const w=screenToWorld(sx,sy);
+  const ns=Math.max(MIN_SCALE,Math.min(MAX_SCALE,view.scale*factor));
+  view.scale=ns; view.offX=sx-w.x*ns; view.offY=sy+w.y*ns;
+}
+function zoomCenter(f){ const {W,H}=canvasSize(); zoomAt(f,W/2,H/2); userAdjusted=true; }
+// metres per grid line so on-screen spacing stays ~70px
+function niceGrid(scale){ const target=70/scale;
+  for(const g of [0.1,0.25,0.5,1,2,5,10,20,50,100,200]) if(g>=target) return g; return 500; }
+
+function drawGraph(){
+  const {W,H}=canvasSize(); cx.clearRect(0,0,W,H);
+  const steps=cachedSteps, pts=cachedPts, P=worldToScreen;
+  if(!steps.length){ cx.fillStyle="#5885BC"; cx.font="12px 'JetBrains Mono',monospace"; cx.textAlign="center";
+    cx.fillText("Build a mission to preview the flight path", W/2, H/2); return; }
+
+  // ── world grid (pans & zooms with content) ──
+  const gm=niceGrid(view.scale); cx.lineWidth=1; cx.strokeStyle="rgba(35,58,87,.45)";
+  const wL=screenToWorld(0,0).x, wR=screenToWorld(W,0).x;
+  for(let gx=Math.ceil(wL/gm)*gm; gx<=wR; gx+=gm){ const X=gx*view.scale+view.offX;
+    cx.beginPath(); cx.moveTo(X,0); cx.lineTo(X,H); cx.stroke(); }
+  const wB=screenToWorld(0,H).y, wT=screenToWorld(0,0).y;
+  for(let gy=Math.ceil(wB/gm)*gm; gy<=wT; gy+=gm){ const Y=-gy*view.scale+view.offY;
+    cx.beginPath(); cx.moveTo(0,Y); cx.lineTo(W,Y); cx.stroke(); }
+  // ground (y = 0)
+  const Y0=view.offY;
+  if(Y0>=-2&&Y0<=H+2){ cx.strokeStyle="rgba(57,95,142,.65)"; cx.setLineDash([4,5]); cx.lineWidth=1;
+    cx.beginPath(); cx.moveTo(0,Y0); cx.lineTo(W,Y0); cx.stroke(); cx.setLineDash([]);
+    cx.fillStyle="#5885BC"; cx.font="10px 'JetBrains Mono',monospace"; cx.textAlign="left"; cx.fillText("ground · 0 m", 8, Y0-5); }
+
+  const running=!!tel.missionRunning, cur=running?(tel.missionCurrentStep==null?-1:tel.missionCurrentStep):-1;
+  // segments
+  for(let i=0;i<steps.length;i++){
+    const a=P(pts[i]), b=P(pts[i+1]);
+    const done=cur>=0&&i<cur, active=i===cur;
+    cx.lineWidth=active?4:3;
+    cx.strokeStyle=done?"rgba(45,189,163,.9)":active?"#a836cc":"rgba(57,95,142,.7)";
+    cx.beginPath(); cx.moveTo(a.X,a.Y); cx.lineTo(b.X,b.Y); cx.stroke();
+    if(steps[i].action==="LAND"){ cx.fillStyle="#ffc4c4"; cx.beginPath(); cx.arc(b.X,b.Y,4,0,7); cx.fill(); }
+    if(steps[i].action==="HOVER"){ cx.strokeStyle="rgba(146,175,211,.8)"; cx.beginPath(); cx.arc(a.X,a.Y,5,0,7); cx.stroke(); }
+    if(steps[i].action==="ALIGN"){ // ArUco re-center waypoint: amber ring + crosshair
+      cx.strokeStyle=active?"#ffd27a":"#f59e0b"; cx.lineWidth=2;
+      cx.beginPath(); cx.arc(b.X,b.Y,7,0,7); cx.stroke();
+      cx.beginPath(); cx.moveTo(b.X-10,b.Y); cx.lineTo(b.X+10,b.Y); cx.moveTo(b.X,b.Y-10); cx.lineTo(b.X,b.Y+10); cx.stroke();
+    }
+  }
+  // waypoint dots
+  for(let i=0;i<pts.length;i++){ const q=P(pts[i]); cx.fillStyle=(cur>=0&&i<=cur)?"#2DBDA3":"#5885BC";
+    cx.beginPath(); cx.arc(q.X,q.Y,2.5,0,7); cx.fill(); }
+  // drone marker (start vertex of active step, else origin)
+  let idx=running?(cur<0?0:cur):0; idx=Math.max(0,Math.min(idx,pts.length-1));
+  const dp=P(pts[idx]); const t=performance.now()/600, pulse=.5+.5*Math.sin(t);
+  cx.save(); cx.shadowColor="#f59e0b"; cx.shadowBlur=12; cx.fillStyle="#f59e0b";
+  cx.beginPath(); cx.arc(dp.X,dp.Y,6,0,7); cx.fill(); cx.restore();
+  cx.strokeStyle="rgba(245,158,11,.45)"; cx.lineWidth=1; cx.beginPath(); cx.arc(dp.X,dp.Y,11+3*pulse,0,7); cx.stroke();
+
+  // scale bar (bottom-left)
+  const barPx=gm*view.scale, bx=12, by=H-13;
+  cx.strokeStyle="rgba(226,234,243,.55)"; cx.lineWidth=2; cx.beginPath();
+  cx.moveTo(bx,by); cx.lineTo(bx+barPx,by); cx.moveTo(bx,by-4); cx.lineTo(bx,by+4);
+  cx.moveTo(bx+barPx,by-4); cx.lineTo(bx+barPx,by+4); cx.stroke();
+  cx.fillStyle="rgba(226,234,243,.7)"; cx.font="10px 'JetBrains Mono',monospace"; cx.textAlign="left";
+  cx.fillText((gm<1?gm:gm.toFixed(0))+" m", bx+barPx+6, by+3);
+}
+// Mini mission map overlaid on the feed: the drone stays pinned at the centre
+// and the whole mission translates around it (drone-centered, fixed scale).
+function drawMini(){
+  const r=mm.getBoundingClientRect(), W=r.width, H=r.height; mmx.clearRect(0,0,W,H);
+  const steps=cachedSteps, pts=cachedPts;
+  const running=!!tel.missionRunning, cur=running?(tel.missionCurrentStep==null?-1:tel.missionCurrentStep):-1;
+  let idx=running?(cur<0?0:cur):0; idx=Math.max(0,Math.min(idx, pts.length-1));
+  const d=pts[idx]||{x:0,y:0};
+  const P=p=>({X:W/2+(p.x-d.x)*MM_SCALE, Y:H/2-(p.y-d.y)*MM_SCALE});
+  // faint crosshair through the drone (frame centre)
+  mmx.strokeStyle="rgba(146,175,211,.16)"; mmx.lineWidth=1;
+  mmx.beginPath(); mmx.moveTo(0,H/2); mmx.lineTo(W,H/2); mmx.moveTo(W/2,0); mmx.lineTo(W/2,H); mmx.stroke();
+  // mission path (clipped naturally by the small canvas)
+  for(let i=0;i<steps.length;i++){
+    const a=P(pts[i]), b=P(pts[i+1]);
+    const done=cur>=0&&i<cur, active=i===cur;
+    mmx.lineWidth=active?3:2;
+    mmx.strokeStyle=done?"rgba(45,189,163,.85)":active?"rgba(168,54,204,.95)":"rgba(146,175,211,.5)";
+    mmx.beginPath(); mmx.moveTo(a.X,a.Y); mmx.lineTo(b.X,b.Y); mmx.stroke();
+    if(steps[i].action==="ALIGN"){ mmx.strokeStyle="#f59e0b"; mmx.lineWidth=1.5; mmx.beginPath(); mmx.arc(b.X,b.Y,4,0,7); mmx.stroke(); }
+  }
+  for(let i=0;i<pts.length;i++){ const q=P(pts[i]); mmx.fillStyle=(cur>=0&&i<=cur)?"#2DBDA3":"rgba(88,133,188,.7)";
+    mmx.beginPath(); mmx.arc(q.X,q.Y,1.8,0,7); mmx.fill(); }
+  // drone fixed at centre
+  const t=performance.now()/600, pulse=.5+.5*Math.sin(t);
+  mmx.save(); mmx.shadowColor="#f59e0b"; mmx.shadowBlur=9; mmx.fillStyle="#f59e0b";
+  mmx.beginPath(); mmx.arc(W/2,H/2,4.5,0,7); mmx.fill(); mmx.restore();
+  mmx.strokeStyle="rgba(245,158,11,.5)"; mmx.lineWidth=1; mmx.beginPath(); mmx.arc(W/2,H/2,8+2*pulse,0,7); mmx.stroke();
+  mmx.fillStyle="rgba(226,234,243,.5)"; mmx.font="9px 'JetBrains Mono',monospace"; mmx.textAlign="left";
+  mmx.fillText("MISSION · drone-centered", 7, 13);
+}
+function loop(){ drawMini(); if(graphOpen) drawGraph(); requestAnimationFrame(loop); }
+
+/* ── pan / zoom interaction ── */
+function localPt(e){ const r=cv.getBoundingClientRect(); return {x:e.clientX-r.left, y:e.clientY-r.top}; }
+function endPtr(e){ pointers.delete(e.pointerId); pinchPrev=null;     // always re-seed pinch on next move
+  if(pointers.size===0) cv.classList.remove("grabbing"); }
+cv.addEventListener("pointerdown",e=>{ try{cv.setPointerCapture(e.pointerId);}catch(_){}
+  pointers.set(e.pointerId,localPt(e)); pinchPrev=null; cv.classList.add("grabbing"); });
+cv.addEventListener("pointermove",e=>{
+  // A mouse released off-canvas (lost capture) never delivers pointerup — recover
+  // so the graph doesn't keep panning on hover with no button held.
+  if(e.pointerType==="mouse" && e.buttons===0 && pointers.has(e.pointerId)){ endPtr(e); return; }
+  if(!pointers.has(e.pointerId)) return;
+  const p=localPt(e), prev=pointers.get(e.pointerId); pointers.set(e.pointerId,p);
+  if(pointers.size===1){ view.offX+=p.x-prev.x; view.offY+=p.y-prev.y; userAdjusted=true; }
+  else if(pointers.size>=2){
+    const vals=[...pointers.values()], a=vals[0], b=vals[1];
+    const dist=Math.hypot(a.x-b.x,a.y-b.y), mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
+    // Anchor the zoom at the PREVIOUS midpoint, then translate by the midpoint
+    // delta, so the content stays pinned under the fingers during a pinch.
+    if(pinchPrev&&pinchPrev.dist>0){ zoomAt(dist/pinchPrev.dist, pinchPrev.cx, pinchPrev.cy);
+      view.offX+=mx-pinchPrev.cx; view.offY+=my-pinchPrev.cy; userAdjusted=true; }
+    pinchPrev={dist,cx:mx,cy:my};
+  }
+});
+cv.addEventListener("pointerup",endPtr);
+cv.addEventListener("pointercancel",endPtr);
+cv.addEventListener("lostpointercapture",endPtr);
+// Fallbacks for a release/capture-loss the canvas never receives (alt-tab, native dialog, off-canvas mouseup).
+window.addEventListener("pointerup",e=>{ if(pointers.has(e.pointerId)) endPtr(e); });
+window.addEventListener("blur",()=>{ pointers.clear(); pinchPrev=null; cv.classList.remove("grabbing"); });
+cv.addEventListener("wheel",e=>{ e.preventDefault(); const p=localPt(e);
+  zoomAt(e.deltaY<0?1.12:1/1.12, p.x, p.y); userAdjusted=true; }, {passive:false});
+$("gzin").onclick =()=>zoomCenter(1.3);
+$("gzout").onclick=()=>zoomCenter(1/1.3);
+$("gfit").onclick =()=>fitView();
+// Resize: keep the backing store sharp; only re-fit when the operator hasn't taken manual control.
+window.addEventListener("resize",()=>{ fitCanvas(); fitMini(); if(!userAdjusted) fitView(); });
+
+/* ── Docked popup drawers (Mission / Graph / RTSP) ── */
+function closePanels(){
+  document.querySelectorAll(".drawer.open").forEach(d=>d.classList.remove("open"));
+  document.querySelectorAll(".tab.active").forEach(t=>t.classList.remove("active"));
+  $("backdrop").classList.remove("open");
+  graphOpen=false;
+}
+function openPanel(id){
+  closePanels();
+  const p=$(id); if(!p) return;
+  p.classList.add("open"); $("backdrop").classList.add("open");
+  document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.panel===id));
+  // The graph canvas only has a correct size once its drawer is on-screen.
+  if(id==="panelGraph"){ graphOpen=true; requestAnimationFrame(()=>{ fitCanvas(); fitView(); }); }
+}
+document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click",()=>{
+  const id=t.dataset.panel;
+  if($(id).classList.contains("open")) closePanels(); else openPanel(id);
+}));
+document.querySelectorAll("[data-close]").forEach(b=>b.addEventListener("click",closePanels));
+$("backdrop").addEventListener("click",closePanels);
+document.addEventListener("keydown",e=>{ if(e.key==="Escape") closePanels(); });
+// devicePixelRatio can change WITHOUT a resize event (window moved to a different-DPI display).
+function watchDpr(){ if(!window.matchMedia) return;
+  try{ matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener("change",()=>{ fitCanvas(); fitMini(); watchDpr(); },{once:true}); }catch(_){}
+}
+watchDpr();
+
+/* ── Buttons ── */
+$("btnTakeoff").onclick =()=>send("takeoff");
+$("btnEnableVS").onclick=()=>send("enableVS");
+$("btnDisableVS").onclick=()=>send("disableVS");
+$("btnStart").onclick=()=>{ if(!builder.length) return;
+  send("runMission",{steps:builder.map(toWire), loop:$("loopChk").checked}); };
+$("btnStop").onclick =()=>send("stopMission");
+$("btnLand").onclick =()=>send("land");
+$("btnRtsp").onclick =()=>send(rtspState.running?"stopRtsp":"startRtsp");
+$("sweepRange").addEventListener("input",()=>{ sweepDragging=true;
+  const v=parseFloat($("sweepRange").value); sweepSpeed=v; $("sweepVal").textContent=v.toFixed(2)+" m/s"; });
+$("sweepRange").addEventListener("change",()=>{ sweepDragging=false;
+  send("setSweepSpeed",{mps:parseFloat($("sweepRange").value)}); });
+
+/* ── Save / load mission config (.json export / import) ── */
+const PLAN_ACTIONS=["LEFT","RIGHT","UP","DOWN","HOVER","ALIGN","LAND"];
+function gatherConfig(){
+  return { type:"rackmission-plan", version:1,
+    sweepSpeed:+sweepSpeed.toFixed(2), loop:$("loopChk").checked,
+    steps:builder.map(s=>({action:s.action, value:s.value})) };
+}
+function sanitizeStep(o){
+  const a=String(o&&o.action||"").toUpperCase(); if(!PLAN_ACTIONS.includes(a)) return null;
+  let v=0;
+  if(a==="LAND") v=0;
+  else if(a==="ALIGN") v=Math.max(0,Math.round(+o.value||0));
+  else { v=+o.value; if(!(v>0)) return null;
+    if(a==="UP"||a==="DOWN") v=Math.min(v,5);
+    else if(a==="HOVER") v=Math.min(v,60);
+    else v=Math.min(v,maxSweepMeters()); }   // LEFT/RIGHT — depends on sweepSpeed (set first below)
+  return {action:a, value:v};
+}
+function applyConfig(c){
+  if(!c || (c.type && c.type!=="rackmission-plan") || !Array.isArray(c.steps)){ console.warn("not a rackmission plan"); return; }
+  if(typeof c.sweepSpeed==="number" && c.sweepSpeed>0){   // set sweep speed first; LEFT/RIGHT clamp uses it
+    sweepSpeed=Math.min(1,Math.max(0.05,c.sweepSpeed));
+    $("sweepRange").value=sweepSpeed; $("sweepVal").textContent=sweepSpeed.toFixed(2)+" m/s";
+    send("setSweepSpeed",{mps:sweepSpeed});
+  }
+  builder=c.steps.map(sanitizeStep).filter(Boolean);
+  $("loopChk").checked=!!c.loop;
+  renderBuilder();
+}
+$("btnExport").onclick=()=>{
+  if(!builder.length) return;
+  const blob=new Blob([JSON.stringify(gatherConfig(),null,2)],{type:"application/json"});
+  const url=URL.createObjectURL(blob), a=document.createElement("a"), d=new Date(), pad=n=>String(n).padStart(2,"0");
+  a.href=url; a.download=`rackmission-${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.json`;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+};
+$("btnImport").onclick=()=>$("fileImport").click();
+$("fileImport").addEventListener("change",e=>{
+  const f=e.target.files&&e.target.files[0]; if(!f) return;
+  const r=new FileReader();
+  r.onload=()=>{ try{ applyConfig(JSON.parse(r.result)); }catch(err){ console.warn("bad config file",err); } $("fileImport").value=""; };
+  r.readAsText(f);
+});
+function copy(t){ if(t&&navigator.clipboard) navigator.clipboard.writeText(t); }
+$("rtspCopy").onclick=()=>{ if(rtspState.url) copy(rtspState.url); };
+
+/* ── Boot ── */
+refreshValLabel(); renderBuilder(); fitCanvas(); fitMini(); requestAnimationFrame(loop); connect();
+</script>
+</body>
+</html>

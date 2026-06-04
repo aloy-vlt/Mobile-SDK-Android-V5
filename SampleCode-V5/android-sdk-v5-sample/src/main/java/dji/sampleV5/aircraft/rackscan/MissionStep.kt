@@ -45,6 +45,19 @@ sealed class MissionStep {
         override val action = "HOVER"
     }
 
+    /** Vision-positioning step: hold until the ArUco marker [markerId] is
+     *  centered in the camera frame, then proceed. Used for GPS-denied indoor
+     *  positioning — re-centering between sweeps corrects the lateral drift
+     *  that open-loop (time-based) sweeps accumulate. The executor blocks on
+     *  the host's centered signal (with a timeout); a host that doesn't do
+     *  vision (the ArUco-Follow fragment) falls back to the no-op defaults on
+     *  [MissionExecutor.Host], so this step only does real work where a vision
+     *  pipeline implements it. */
+    data class AlignAruco(val markerId: Int = 0) : MissionStep() {
+        override val displaySeconds = 4f      // rough timeline-block size only
+        override val action = "ALIGN"
+    }
+
     /** Terminal step: the executor issues the land command and exits the
      *  mission after the drone reports motors off (or after LAND_TIMEOUT_MS).
      *  Any subsequent steps in the queue are skipped. */
@@ -61,6 +74,7 @@ sealed class MissionStep {
             is Up    -> put("distance", distanceM)
             is Down  -> put("distance", distanceM)
             is Hover -> put("seconds", seconds)
+            is AlignAruco -> put("markerId", markerId)
             Land     -> { /* no parameter */ }
         }
     }
@@ -75,6 +89,7 @@ sealed class MissionStep {
                 "UP"    -> Up(o.optDouble("distance", 0.0).toFloat().coerceIn(0.1f, 5f))
                 "DOWN"  -> Down(o.optDouble("distance", 0.0).toFloat().coerceIn(0.1f, 5f))
                 "HOVER" -> Hover(o.optDouble("seconds", 0.0).toFloat().coerceIn(0.1f, 60f))
+                "ALIGN" -> AlignAruco(o.optInt("markerId", 0).coerceIn(0, 999))
                 "LAND"  -> Land
                 else    -> null
             }
