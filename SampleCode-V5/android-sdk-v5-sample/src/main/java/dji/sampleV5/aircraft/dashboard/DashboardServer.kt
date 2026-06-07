@@ -13,18 +13,24 @@ import java.util.concurrent.CopyOnWriteArraySet
  * Embedded HTTP + WebSocket server that serves the LAN dashboard and
  * accepts remote-control commands from connected clients.
  *
- * - GET /             -> assets/dashboard/index.html
- * - GET /<path>       -> assets/dashboard/<path>
+ * - GET /             -> assets/<assetRoot>/index.html
+ * - GET /<path>       -> assets/<assetRoot>/<path>
  * - WS  /ws           -> server pushes binary JPEG frames + JSON telemetry;
  *                        clients push JSON command objects.
  *
  * Commands from clients arrive as text frames containing JSON of shape
  * `{"cmd": "<name>", ...args}`; they are forwarded to [commandHandler] which
  * is set by [DashboardServerVM] when it starts the server.
+ *
+ * [assetRoot] selects which `assets/` subfolder the static files are served
+ * from. It defaults to `"dashboard"` (the LAN dashboard) so existing callers
+ * are unaffected; the Rack Scan Missioning module passes `"rackmission"` to
+ * reuse this exact server for a different dashboard UI.
  */
 class DashboardServer(
     port: Int,
     private val appContext: Context,
+    private val assetRoot: String = "dashboard",
 ) : NanoWSD(port) {
 
     interface CommandHandler {
@@ -50,7 +56,7 @@ class DashboardServer(
         if (path.contains("..")) {
             return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "forbidden")
         }
-        val assetPath = "dashboard/$path"
+        val assetPath = "$assetRoot/$path"
         return try {
             val stream: InputStream = appContext.assets.open(assetPath)
             val mime = mimeOf(path)

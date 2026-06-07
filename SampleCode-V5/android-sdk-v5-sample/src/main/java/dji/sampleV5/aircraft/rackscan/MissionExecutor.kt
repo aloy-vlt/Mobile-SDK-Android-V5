@@ -35,6 +35,15 @@ class MissionExecutor(private val host: Host, private val telemetry: RackScanTel
         fun missionLand()
         /** Whether the FC reports motors on. Used to detect "landed". */
         fun motorsOn(): Boolean
+
+        // ── ArUco align (vision positioning) — optional ──
+        // Default no-ops so hosts without a vision pipeline (e.g. ArUco-Follow)
+        // are unaffected; only hosts that implement marker centering override.
+        /** Begin centering on ArUco marker [markerId]. */
+        fun missionStartAlign(markerId: Int) {}
+        /** True once the target marker is centered in the frame. Default true
+         *  so a non-vision host treats an ALIGN step as an instant pass. */
+        fun isCentered(): Boolean = true
     }
 
     private val exec = Executors.newSingleThreadExecutor { r ->
@@ -104,8 +113,33 @@ class MissionExecutor(private val host: Host, private val telemetry: RackScanTel
             is MissionStep.Hover -> { host.missionStopAndHover(); sleepSeconds(step.seconds) }
             is MissionStep.Up    -> runVerticalStep(step.distanceM, up = true)
             is MissionStep.Down  -> runVerticalStep(step.distanceM, up = false)
+            is MissionStep.AlignAruco -> runAlignStep(step.markerId)
             MissionStep.Land     -> runLandStep()
         }
+    }
+
+    /** Hold while the host centers the target ArUco marker. Proceeds once the
+     *  marker has been reported centered continuously for [ALIGN_HOLD_MS], or
+     *  after [ALIGN_TIMEOUT_MS] (logged) so a never-seen marker can't hang the
+     *  mission. The host parks in hover afterwards. */
+    private fun runAlignStep(markerId: Int) {
+        host.missionStartAlign(markerId)
+        val deadline = System.currentTimeMillis() + ALIGN_TIMEOUT_MS
+        var centeredSince = 0L
+        while (!requestStop && System.currentTimeMillis() < deadline) {
+            if (host.isCentered()) {
+                val now = System.currentTimeMillis()
+                if (centeredSince == 0L) centeredSince = now
+                else if (now - centeredSince >= ALIGN_HOLD_MS) { logs.i(TAG, "ArUco marker $markerId centered"); break }
+            } else {
+                centeredSince = 0L
+            }
+            sleepInterruptible(80)
+        }
+        if (System.currentTimeMillis() >= deadline) {
+            logs.w(TAG, "Align timeout: marker $markerId not centered in ${ALIGN_TIMEOUT_MS / 1000}s — proceeding")
+        }
+        host.missionStopAndHover()
     }
 
     private fun runLandStep() {
@@ -154,6 +188,7 @@ class MissionExecutor(private val host: Host, private val telemetry: RackScanTel
         is MissionStep.Up    -> "UP ${s.distanceM}m"
         is MissionStep.Down  -> "DOWN ${s.distanceM}m"
         is MissionStep.Hover -> "HOVER ${s.seconds}s"
+        is MissionStep.AlignAruco -> "ALIGN marker ${s.markerId}"
         MissionStep.Land     -> "LAND"
     }
 
@@ -166,5 +201,7 @@ class MissionExecutor(private val host: Host, private val telemetry: RackScanTel
         private const val TAG = "Mission"
         private const val VERTICAL_STEP_TIMEOUT_MS = 15000L
         private const val LAND_TIMEOUT_MS          = 20000L
+        private const val ALIGN_TIMEOUT_MS         = 20000L
+        private const val ALIGN_HOLD_MS            = 1000L   // centered must hold this long
     }
 }

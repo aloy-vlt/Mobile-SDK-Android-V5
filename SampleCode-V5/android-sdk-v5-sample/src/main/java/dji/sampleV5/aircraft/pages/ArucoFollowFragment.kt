@@ -319,7 +319,23 @@ class ArucoFollowFragment : DJIFragment() {
                     telemetry.velocityX = it.x
                     telemetry.velocityY = it.y
                     telemetry.velocityZ = it.z
+                    telemetry.sampleTimeMs = System.currentTimeMillis()
                 }
+            }
+        } catch (_: Throwable) {}
+        try {
+            FlightControllerKey.KeyAircraftAttitude.create().listen(this) { att ->
+                att?.let {
+                    telemetry.attPitchDeg = it.pitch
+                    telemetry.attRollDeg  = it.roll
+                    telemetry.attYawDeg   = it.yaw
+                    telemetry.sampleTimeMs = System.currentTimeMillis()
+                }
+            }
+        } catch (_: Throwable) {}
+        try {
+            FlightControllerKey.KeyUltrasonicHeight.create().listen(this) { h ->
+                if (h != null) telemetry.ultrasonicHeightDm = h
             }
         } catch (_: Throwable) {}
         try {

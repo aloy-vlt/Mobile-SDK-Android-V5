@@ -21,6 +21,11 @@ class RackScanTelemetry {
     // ── Marker detection (last frame) ──
     @Volatile var detected: Boolean    = false
     @Volatile var offsetX: Float       = 0f
+    // Vertical (elevation) offset of the marker in the frame, normalised to
+    // [-1,1]; >0 = marker below centre. Written by the Rack-Mission aligner.
+    @Volatile var offsetY: Float       = 0f
+    // True when the aligner has the marker centred on BOTH axes (within deadzone).
+    @Volatile var alignCentered: Boolean = false
     @Volatile var markerSize: Float    = 0f
     @Volatile var visibleIdsCsv: String = ""
 
@@ -53,6 +58,19 @@ class RackScanTelemetry {
     @Volatile var velocityX: Double         = 0.0   // m/s, NEU frame
     @Volatile var velocityY: Double         = 0.0
     @Volatile var velocityZ: Double         = 0.0   // positive = up (or down, depending on SDK)
+
+    // ── Attitude (degrees, from KeyAircraftAttitude) ──
+    // Note: `rollDeg` (above) is the COMMANDED roll going into the pump; these
+    // are the FC's reported body attitude used by the dashboard's dead-reckoning
+    // path tracker. Kept separate so neither overwrites the other.
+    @Volatile var attPitchDeg: Double       = 0.0
+    @Volatile var attRollDeg: Double        = 0.0
+    @Volatile var attYawDeg: Double         = 0.0
+    // Ultrasonic / VPS height, raw SDK units = decimeters (per MSDK docs).
+    @Volatile var ultrasonicHeightDm: Int   = 0
+    // System time of the most recent FC sample (velocity/attitude update).
+    // Browser uses this to compute dt for velocity integration.
+    @Volatile var sampleTimeMs: Long        = 0L
 
     // VPS (vision positioning) — fragment toggles it off during CLIMBING_UP
     // to release the FC's downward-sensor altitude hold that was filtering our
@@ -87,6 +105,8 @@ class RackScanTelemetry {
         append("\"isVSEnabled\":").append(isVSEnabled).append(',')
         append("\"detected\":").append(detected).append(',')
         append("\"offsetX\":").append(offsetX).append(',')
+        append("\"offsetY\":").append(offsetY).append(',')
+        append("\"alignCentered\":").append(alignCentered).append(',')
         append("\"markerSize\":").append(markerSize).append(',')
         append("\"visibleIds\":\"").append(visibleIdsCsv).append("\",")
         append("\"rollPitchControlMode\":\"").append(rollPitchControlMode).append("\",")
@@ -111,6 +131,11 @@ class RackScanTelemetry {
         append("\"velocityX\":").append(velocityX).append(',')
         append("\"velocityY\":").append(velocityY).append(',')
         append("\"velocityZ\":").append(velocityZ).append(',')
+        append("\"attPitchDeg\":").append(attPitchDeg).append(',')
+        append("\"attRollDeg\":").append(attRollDeg).append(',')
+        append("\"attYawDeg\":").append(attYawDeg).append(',')
+        append("\"ultrasonicHeightDm\":").append(ultrasonicHeightDm).append(',')
+        append("\"sampleTimeMs\":").append(sampleTimeMs).append(',')
         append("\"vpsDisabledByUs\":").append(vpsDisabledByUs).append(',')
         append("\"missionRunning\":").append(missionRunning).append(',')
         append("\"missionLoop\":").append(missionLoop).append(',')

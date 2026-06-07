@@ -168,6 +168,25 @@
         stroke-linejoin: round; }
     .flight-path .empty-msg { fill: #888; font: 12px ui-monospace, monospace;
         text-anchor: middle; }
+
+    /* 3D flight-path card — Three.js canvas + small legend / status row. */
+    .path3d-wrap { display: block; width: 100%; height: 420px;
+        background: #fafafa; border: 1px solid var(--border); border-radius: 3px;
+        position: relative; overflow: hidden; }
+    .path3d-canvas { display: block; width: 100%; height: 100%; }
+    .path3d-overlay { position: absolute; top: 6px; left: 8px;
+        font: 11px ui-monospace, monospace; color: #555;
+        background: rgba(255,255,255,0.75); padding: 4px 8px; border-radius: 3px;
+        pointer-events: none; }
+    .path3d-overlay .row { display: block; }
+    .path3d-overlay .lbl { color: #888; margin-right: 4px; }
+    .path3d-legend { display: flex; gap: 16px; flex-wrap: wrap;
+        font: 11px ui-monospace, monospace; color: var(--dim);
+        margin-top: 6px; }
+    .path3d-legend .leg-line.PLAN   { background: #2563eb; }
+    .path3d-legend .leg-line.ACTUAL { background: #f59e0b; }
+    .path3d-legend .leg-dot.DRONE   { background: #f59e0b; }
+    .path3d-legend .leg-dot.START   { background: #16a34a; }
   </style>
 </head>
 <body>
@@ -306,9 +325,230 @@
   </div>
 
   <div class="card">
+    <h2>
+      3D Flight Path (IMU dead-reckoning)
+      <span id="path3dStatus" style="float:right;font-weight:normal;color:var(--dim);">idle</span>
+    </h2>
+    <div class="path3d-wrap">
+      <canvas id="path3d" class="path3d-canvas"></canvas>
+      <div class="path3d-overlay">
+        <span class="row"><span class="lbl">pos (m):</span><span id="path3dPos">0.00, 0.00, 0.00</span></span>
+        <span class="row"><span class="lbl">yaw (Δ°):</span><span id="path3dYaw">0.0</span></span>
+        <span class="row"><span class="lbl">samples:</span><span id="path3dSamples">0</span></span>
+      </div>
+    </div>
+    <div class="path3d-legend">
+      <span><span class="leg-line PLAN"></span> planned</span>
+      <span><span class="leg-line ACTUAL"></span> actual (vx/vy integrated)</span>
+      <span><span class="leg-dot START"></span> start</span>
+      <span><span class="leg-dot DRONE"></span> drone</span>
+      <span style="margin-left:auto;color:#999;">drag = orbit · Ctrl+scroll = zoom · right-drag = pan</span>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>Logs (last 200)</h2>
     <pre class="log" id="logs"></pre>
   </div>
+
+  <!-- Three.js for the 3D flight path. ESM import map keeps OrbitControls'
+       `from 'three'` resolution working without a bundler. Requires the
+       browser to have internet access (the phone serves the page over Wi-Fi
+       LAN, but the JS modules pull from unpkg). -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    // The dashboard IIFE below calls into window._path3d to push planned
+    // segments / actual dead-reckoned points / drone pose. Coordinates are in
+    // the drone's mission-start frame:
+    //   THREE.x = lateral (drone's right at mission start, "RIGHT" sweep = +x)
+    //   THREE.y = altitude relative to mission start (UP = +y)
+    //   THREE.z = forward in the drone's mission-start heading (away from rack)
+    // The rack itself sits roughly at the (x,y) plane in front of the drone,
+    // so planned paths stay at z ≈ 0 and any z-drift in the actual track
+    // represents forward/back wander the side-view SVG can't show.
+
+    const canvas = document.getElementById('path3d');
+    const wrap   = canvas.parentElement;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xfafafa);
+
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.02, 100);
+    camera.position.set(2.4, 1.8, 2.4);
+
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 0.4, 0);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.1;
+    // OrbitControls' default behaviour traps every wheel event on the canvas,
+    // which prevents the user from scrolling the page past the 3D card. We
+    // disable its built-in wheel zoom and re-implement it as Ctrl/Cmd + wheel
+    // (same convention Google Maps uses) so plain wheel falls through to the
+    // page scroll.
+    controls.enableZoom = false;
+
+    const ZOOM_STEP   = 0.88;   // each tick brings camera 12% closer / farther
+    const ZOOM_MIN_D  = 0.4;
+    const ZOOM_MAX_D  = 30;
+    canvas.addEventListener('wheel', (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;   // let the page scroll
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+      const offset = camera.position.clone().sub(controls.target);
+      offset.multiplyScalar(factor);
+      const d = offset.length();
+      if      (d < ZOOM_MIN_D) offset.setLength(ZOOM_MIN_D);
+      else if (d > ZOOM_MAX_D) offset.setLength(ZOOM_MAX_D);
+      camera.position.copy(controls.target).add(offset);
+    }, { passive: false });
+
+    // ── Static scene: floor grid + axes ──
+    const grid = new THREE.GridHelper(4, 16, 0xbbbbbb, 0xe4e4e4);
+    grid.position.y = 0;
+    scene.add(grid);
+
+    // Custom axes: red=x (right), green=y (up), blue=z (forward).
+    scene.add(new THREE.AxesHelper(0.4));
+
+    // ── Start marker (green sphere at origin) ──
+    const startMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(0.05, 12, 12),
+      new THREE.MeshBasicMaterial({ color: 0x16a34a })
+    );
+    scene.add(startMesh);
+
+    // ── Planned path (blue) ──
+    const plannedMat = new THREE.LineBasicMaterial({ color: 0x2563eb });
+    let plannedLine = null;
+
+    // ── Actual path (orange). Pre-allocated buffer to avoid GC churn. ──
+    const MAX_ACTUAL = 6000;     // ≥ 20 min at 5 Hz pushes
+    const actualPositions = new Float32Array(MAX_ACTUAL * 3);
+    let actualCount = 0;
+    const actualGeom = new THREE.BufferGeometry();
+    actualGeom.setAttribute('position', new THREE.BufferAttribute(actualPositions, 3));
+    actualGeom.setDrawRange(0, 0);
+    const actualMat = new THREE.LineBasicMaterial({ color: 0xf59e0b });
+    const actualLine = new THREE.Line(actualGeom, actualMat);
+    scene.add(actualLine);
+
+    // ── Drone marker: small cone pointing along its heading. ──
+    // Cone default points along +Y; we rotate so the tip points along -Z,
+    // which is the drone's forward direction in our coords (toward the rack).
+    const droneGeom = new THREE.ConeGeometry(0.05, 0.16, 12);
+    droneGeom.rotateX(Math.PI / 2);
+    droneGeom.translate(0, 0, -0.04);
+    const droneMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
+    const droneMesh = new THREE.Mesh(droneGeom, droneMat);
+    scene.add(droneMesh);
+
+    // End marker (red sphere) at the most-recently-pushed actual point.
+    const endMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(0.035, 10, 10),
+      new THREE.MeshBasicMaterial({ color: 0xdc2626 })
+    );
+    endMesh.visible = false;
+    scene.add(endMesh);
+
+    function resize() {
+      const w = wrap.clientWidth;
+      const h = wrap.clientHeight || 420;
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    function plannedPointsFromSteps(steps, sweepSpeed) {
+      // Mirrors the SVG card's stepToDxDy semantics so the two views agree.
+      // LEFT/RIGHT displace along x by (seconds × sweepSpeed); UP/DOWN by
+      // distance; HOVER/LAND don't move the cursor.
+      const pts = [new THREE.Vector3(0, 0, 0)];
+      let x = 0, y = 0;
+      for (const s of steps) {
+        if      (s.action === 'LEFT')  x -= (s.seconds || 0) * sweepSpeed;
+        else if (s.action === 'RIGHT') x += (s.seconds || 0) * sweepSpeed;
+        else if (s.action === 'UP')    y += (s.distance || 0);
+        else if (s.action === 'DOWN')  y -= (s.distance || 0);
+        // HOVER, LAND → no displacement
+        pts.push(new THREE.Vector3(x, y, 0));
+      }
+      return pts;
+    }
+
+    function updatePlanned(steps, sweepSpeed) {
+      if (plannedLine) {
+        scene.remove(plannedLine);
+        plannedLine.geometry.dispose();
+        plannedLine = null;
+      }
+      if (!steps || steps.length === 0) return;
+      const pts = plannedPointsFromSteps(steps, sweepSpeed || 0.15);
+      const geo = new THREE.BufferGeometry().setFromPoints(pts);
+      plannedLine = new THREE.Line(geo, plannedMat);
+      scene.add(plannedLine);
+    }
+
+    function resetActual() {
+      actualCount = 0;
+      actualGeom.setDrawRange(0, 0);
+      actualGeom.attributes.position.needsUpdate = true;
+      endMesh.visible = false;
+      droneMesh.position.set(0, 0, 0);
+      droneMesh.rotation.y = 0;
+    }
+
+    function addActualPoint(x, y, z) {
+      if (actualCount >= MAX_ACTUAL) return;
+      const i = actualCount * 3;
+      actualPositions[i]     = x;
+      actualPositions[i + 1] = y;
+      actualPositions[i + 2] = z;
+      actualCount++;
+      actualGeom.setDrawRange(0, actualCount);
+      actualGeom.attributes.position.needsUpdate = true;
+    }
+
+    function setDronePose(x, y, z, yawDeltaRad) {
+      droneMesh.position.set(x, y, z);
+      droneMesh.rotation.y = -yawDeltaRad;   // Three's +Y is up; -yaw rotates
+                                             // a +x-aligned heading toward +z
+                                             // as yaw increases (clockwise from
+                                             // mission-start forward).
+      endMesh.position.set(x, y, z);
+      endMesh.visible = true;
+    }
+
+    let raf = 0;
+    function animate() {
+      controls.update();
+      renderer.render(scene, camera);
+      raf = requestAnimationFrame(animate);
+    }
+    animate();
+
+    window._path3d = {
+      updatePlanned,
+      resetActual,
+      addActualPoint,
+      setDronePose,
+      resize,
+    };
+  </script>
 
   <script>
     (function () {
@@ -396,6 +636,17 @@
                                         // its vertical path coordinate.
       let renderInterval       = null;  // setInterval handle for live re-render
 
+      // ── IMU dead-reckoning state for the 3D path card ──
+      // Position is integrated from KeyAircraftVelocity (NEU world frame) and
+      // rotated into the drone's mission-start frame on each push. Reset on
+      // mission start; values outside an active mission have no meaning.
+      let startAttYawRad     = 0;       // captured at mission start (radians)
+      let lastIntegrationMs  = 0;       // server-side sampleTimeMs of previous integration
+      let drWorldX           = 0;       // accumulated world position (NEU x = north)
+      let drWorldY           = 0;       // accumulated world position (NEU y = east)
+      let drSampleCount      = 0;       // for the overlay "samples" counter
+      const DR_DT_CAP_S      = 1.0;     // skip integration if gap > 1 s (stale frame)
+
       // ── Simulation: drive the live tracker entirely client-side, no drone. ──
       // Used to validate the dashboard's visuals (path coloring, drone dot
       // motion, timeline progress) before flying.
@@ -458,6 +709,11 @@
         });
         renderTimeline();
         renderFlightPath();
+        // Mirror the queue into the 3D planned path while idle. Once a mission
+        // is running, applyMissionTelemetry takes over with liveSteps instead.
+        if (!liveRunning && window._path3d) {
+          window._path3d.updatePlanned(pendingSteps, lastSweepSpeed);
+        }
       }
 
       // ── Flight-path whiteboard (SVG) ──
@@ -779,6 +1035,18 @@
         simAltAtStepStart = lastAltitudeM;
         liveStepStartedLocal = Date.now();
         simStepStartedMs = Date.now();
+        // Reset the 3D card and load the simulated mission's planned path.
+        // The simulator pushes synthetic actual-path samples on every tick
+        // (see simulationTick), so the 3D card animates alongside the SVG one.
+        if (window._path3d) {
+          window._path3d.resetActual();
+          window._path3d.updatePlanned(liveSteps, lastSweepSpeed);
+        }
+        drSampleCount = 0;
+        $('path3dStatus').textContent = 'simulating';
+        $('path3dPos').textContent = '0.00, 0.00, 0.00';
+        $('path3dYaw').textContent = '0.0';
+        $('path3dSamples').textContent = '0';
         // Start render loop (in case it wasn't already running from real telemetry).
         if (!renderInterval) renderInterval = setInterval(renderFlightPath, 100);
         // Tick the simulator at 20 Hz so altitude interpolation is smooth.
@@ -789,6 +1057,33 @@
         $('btnRetrace').disabled = true;
         renderTimeline();
         renderFlightPath();
+      }
+
+      // Compute the simulator's idealised (x_lateral, y_altitudeRel) in the
+      // mission-start frame by accumulating finished steps plus an interpolated
+      // contribution from the in-progress step. No noise / no drift — this is
+      // exactly the planned path, walked along at the sim's pace.
+      function simulated3dPosition() {
+        let x = 0, y = 0;
+        for (let i = 0; i < liveCurrent && i < liveSteps.length; i++) {
+          const s = liveSteps[i];
+          if      (s.action === 'LEFT')  x -= (s.seconds || 0) * lastSweepSpeed;
+          else if (s.action === 'RIGHT') x += (s.seconds || 0) * lastSweepSpeed;
+          else if (s.action === 'UP')    y += (s.distance || 0);
+          else if (s.action === 'DOWN')  y -= (s.distance || 0);
+        }
+        const step = liveSteps[liveCurrent];
+        if (step) {
+          const elapsed = Date.now() - simStepStartedMs;
+          const dur     = simStepDurationMs(step);
+          const u       = dur > 0 ? Math.min(1, elapsed / dur) : 1;
+          if      (step.action === 'LEFT')  x -= (step.seconds || 0) * lastSweepSpeed * u;
+          else if (step.action === 'RIGHT') x += (step.seconds || 0) * lastSweepSpeed * u;
+          else if (step.action === 'UP')    y += (step.distance || 0) * u;
+          else if (step.action === 'DOWN')  y -= (step.distance || 0) * u;
+          // HOVER / LAND don't displace the cursor.
+        }
+        return { x, y };
       }
 
       function simulationTick() {
@@ -808,6 +1103,21 @@
         } else if (step.action === 'LAND') {
           const u = dur > 0 ? Math.min(1, elapsed / dur) : 1;
           lastAltitudeM = simAltAtStepStart * (1 - u);
+        }
+
+        // Drive the 3D actual-path buffer from the simulated position. Since
+        // there's no real drift in the sim, the actual path will trace exactly
+        // along the planned path — confirms the 3D scene is wired up before
+        // putting the drone in the air.
+        if (window._path3d) {
+          const p = simulated3dPosition();
+          window._path3d.addActualPoint(p.x, p.y, 0);
+          window._path3d.setDronePose(p.x, p.y, 0, 0);
+          drSampleCount++;
+          $('path3dPos').textContent =
+            `${p.x.toFixed(2)}, ${p.y.toFixed(2)}, 0.00`;
+          $('path3dYaw').textContent = '0.0';
+          $('path3dSamples').textContent = drSampleCount;
         }
 
         // Status reflects mission-level simulating tag.
@@ -835,6 +1145,7 @@
         if (simInterval) { clearInterval(simInterval); simInterval = null; }
         if (renderInterval) { clearInterval(renderInterval); renderInterval = null; }
         $('missionStatus').textContent = 'idle';
+        $('path3dStatus').textContent = 'idle';
         $('btnRun').disabled     = false;
         $('btnStop').disabled    = true;
         $('btnSimulate').disabled = false;
@@ -874,6 +1185,47 @@
         // map absolute altitude → path-Y (path is mission-relative; 0 = start).
         if (liveRunning && !wasRunning) {
           missionStartAltitudeM = lastAltitudeM;
+          // Latch the dead-reckoning reference frame too: yaw at this moment
+          // defines the mission-start "forward" axis, and integration restarts
+          // from zero in that frame.
+          startAttYawRad     = ((typeof t.attYawDeg === 'number') ? t.attYawDeg : 0) * Math.PI / 180;
+          lastIntegrationMs  = t.sampleTimeMs || 0;
+          drWorldX = 0; drWorldY = 0; drSampleCount = 0;
+          if (window._path3d) window._path3d.resetActual();
+          $('path3dStatus').textContent = 'running';
+        } else if (!liveRunning && wasRunning) {
+          $('path3dStatus').textContent = 'idle';
+        }
+
+        // Dead-reckon position from velocity → push a sample into the 3D track.
+        // Runs only while a mission is in progress and we have a fresh FC
+        // sample (sampleTimeMs strictly newer than the last integration).
+        if (liveRunning && window._path3d && typeof t.sampleTimeMs === 'number'
+            && t.sampleTimeMs > lastIntegrationMs && lastIntegrationMs > 0) {
+          const dt = (t.sampleTimeMs - lastIntegrationMs) / 1000;
+          if (dt > 0 && dt < DR_DT_CAP_S) {
+            drWorldX += (t.velocityX || 0) * dt;
+            drWorldY += (t.velocityY || 0) * dt;
+          }
+          lastIntegrationMs = t.sampleTimeMs;
+          // Rotate world-frame (NEU x=north, y=east) accumulated position into
+          // the drone's mission-start frame. yaw=0 → drone faces north, so
+          // forward unit = (cos yaw, sin yaw) and right unit = (-sin yaw, cos yaw).
+          const c = Math.cos(startAttYawRad);
+          const s = Math.sin(startAttYawRad);
+          const posForward = drWorldX * c + drWorldY * s;
+          const posRight   = -drWorldX * s + drWorldY * c;
+          const heightRel  = lastAltitudeM - missionStartAltitudeM;
+          // Three.js axes: +x = drone's right at start, +y = up, +z = forward.
+          window._path3d.addActualPoint(posRight, heightRel, posForward);
+          const curYawRad = ((typeof t.attYawDeg === 'number') ? t.attYawDeg : 0) * Math.PI / 180;
+          const yawDelta  = curYawRad - startAttYawRad;
+          window._path3d.setDronePose(posRight, heightRel, posForward, yawDelta);
+          drSampleCount++;
+          $('path3dPos').textContent =
+            `${posRight.toFixed(2)}, ${heightRel.toFixed(2)}, ${posForward.toFixed(2)}`;
+          $('path3dYaw').textContent = (yawDelta * 180 / Math.PI).toFixed(1);
+          $('path3dSamples').textContent = drSampleCount;
         }
         // Drive a 10 Hz render loop while running so the live indicator
         // moves smoothly between telemetry pushes (which only arrive at 5 Hz).
@@ -890,6 +1242,11 @@
         else if (typeof raw === 'string') {
           try { liveSteps = JSON.parse(raw); } catch (_) { liveSteps = []; }
         } else liveSteps = [];
+        // Refresh the 3D planned path with the server's authoritative mission
+        // (which may differ from the local queue if the user edited it).
+        if (liveRunning && window._path3d) {
+          window._path3d.updatePlanned(liveSteps, lastSweepSpeed);
+        }
         const loopTag = (liveRunning && t.missionLoop) ? ' [loop]' : '';
         $('missionStatus').textContent = liveRunning
           ? `running — step ${liveCurrent + 1}/${liveSteps.length}${loopTag}`
