@@ -330,7 +330,21 @@
         <input type="range" id="sweepRange" min="0.05" max="1" step="0.05" value="0.3" />
         <span class="sweepval" id="sweepVal">0.30 m/s</span>
       </div>
-      <div class="hintline">ArUco Align re-centers on a marker before the next step — GPS-free indoor positioning that corrects sweep drift. Sweep distance = speed × time (open-loop).</div>
+      <div class="addrow" style="grid-template-columns:1fr 1fr 1fr; margin-top:11px">
+        <div>
+          <label class="fl" for="arucoSizeM">ArUco size (mm)</label>
+          <input type="number" id="arucoSizeM" value="100" min="20" max="2000" step="1" />
+        </div>
+        <div>
+          <label class="fl" for="standoffM">Standoff (m)</label>
+          <input type="number" id="standoffM" value="1.0" min="0.3" max="10" step="0.1" />
+        </div>
+        <div>
+          <label class="fl" for="fovDeg">Camera FOV (°)</label>
+          <input type="number" id="fovDeg" value="82" min="20" max="160" step="1" />
+        </div>
+      </div>
+      <div class="hintline">ArUco Align holds the marker centred on all 3 axes. Distance is metric — enter the marker's real side length and the target standoff. GPS-free indoor positioning that also corrects sweep drift.</div>
       <div class="btnrow" style="margin-top:12px; align-items:center">
         <label class="chk"><input type="checkbox" id="loopChk" /> Loop mission</label>
         <span class="spacer" style="flex:1"></span>
@@ -437,6 +451,10 @@ function apply(d){
     sweepSpeed=tel.sweepSpeedMps;
     $("sweepRange").value=sweepSpeed; $("sweepVal").textContent=sweepSpeed.toFixed(2)+" m/s";
   }
+  // reflect drone-side marker-size / standoff in the inputs when not being edited
+  const aSz=$("arucoSizeM"); if(typeof tel.arucoSizeM==="number" && document.activeElement!==aSz && Math.abs((parseFloat(aSz.value)||0)/1000-tel.arucoSizeM)>5e-4) aSz.value=Math.round(tel.arucoSizeM*1000);
+  const aSt=$("standoffM"); if(typeof tel.standoffM==="number" && document.activeElement!==aSt && Math.abs((parseFloat(aSt.value)||0)-tel.standoffM)>1e-3) aSt.value=tel.standoffM;
+  const aFov=$("fovDeg"); if(typeof tel.cameraHfovDeg==="number" && document.activeElement!==aFov && Math.abs((parseFloat(aFov.value)||0)-tel.cameraHfovDeg)>0.5) aFov.value=Math.round(tel.cameraHfovDeg);
   // readouts
   $("roAlt").innerHTML=fmt(tel.altitudeM,2)+'<small> m</small>';
   $("roBat").innerHTML=fmt(d.battery,0)+'<small> %</small>';
@@ -457,7 +475,7 @@ function apply(d){
   $("mBar").style.width=(total>0?Math.round(((cur<0?0:cur+ (running?0.5:0))/total)*100):0)+"%";
   if(running && tel.stateName==="ALIGN"){
     const c = tel.detected ? (tel.alignCentered ? "· CENTERED" : "· centering") : "· no marker";
-    $("mElapsed").textContent = `ALIGN #${tel.currentTargetId|0} · x ${fmt(tel.offsetX,2)} · y ${fmt(tel.offsetY,2)} ${c}`;
+    $("mElapsed").textContent = `ALIGN #${tel.currentTargetId|0} · x ${fmt(tel.offsetX,2)} · y ${fmt(tel.offsetY,2)} · ${fmt(tel.distanceM,2)}m/${fmt(tel.standoffM,1)}m ${c}`;
   } else {
     $("mElapsed").textContent = running&&cur>=0 ? `running step ${cur+1}` : "step —";
   }
@@ -834,12 +852,17 @@ $("sweepRange").addEventListener("input",()=>{ sweepDragging=true;
   const v=parseFloat($("sweepRange").value); sweepSpeed=v; $("sweepVal").textContent=v.toFixed(2)+" m/s"; });
 $("sweepRange").addEventListener("change",()=>{ sweepDragging=false;
   send("setSweepSpeed",{mps:parseFloat($("sweepRange").value)}); });
+$("arucoSizeM").addEventListener("change",()=>send("setArucoSize",{m:(parseFloat($("arucoSizeM").value)||100)/1000}));
+$("standoffM").addEventListener("change",()=>send("setStandoff",{m:parseFloat($("standoffM").value)||1.0}));
+$("fovDeg").addEventListener("change",()=>send("setCameraHfov",{deg:parseFloat($("fovDeg").value)||82}));
 
 /* ── Save / load mission config (.json export / import) ── */
 const PLAN_ACTIONS=["LEFT","RIGHT","UP","DOWN","HOVER","ALIGN","LAND"];
 function gatherConfig(){
   return { type:"rackmission-plan", version:1,
     sweepSpeed:+sweepSpeed.toFixed(2), loop:$("loopChk").checked,
+    arucoSizeM:(+$("arucoSizeM").value||100)/1000, standoffM:+$("standoffM").value||1.0,
+    cameraHfovDeg:+$("fovDeg").value||82,
     steps:builder.map(s=>({action:s.action, value:s.value})) };
 }
 function sanitizeStep(o){
@@ -860,6 +883,9 @@ function applyConfig(c){
     $("sweepRange").value=sweepSpeed; $("sweepVal").textContent=sweepSpeed.toFixed(2)+" m/s";
     send("setSweepSpeed",{mps:sweepSpeed});
   }
+  if(typeof c.arucoSizeM==="number"){ $("arucoSizeM").value=Math.round(c.arucoSizeM*1000); send("setArucoSize",{m:c.arucoSizeM}); }
+  if(typeof c.standoffM==="number"){ $("standoffM").value=c.standoffM; send("setStandoff",{m:c.standoffM}); }
+  if(typeof c.cameraHfovDeg==="number"){ $("fovDeg").value=c.cameraHfovDeg; send("setCameraHfov",{deg:c.cameraHfovDeg}); }
   builder=c.steps.map(sanitizeStep).filter(Boolean);
   $("loopChk").checked=!!c.loop;
   renderBuilder();

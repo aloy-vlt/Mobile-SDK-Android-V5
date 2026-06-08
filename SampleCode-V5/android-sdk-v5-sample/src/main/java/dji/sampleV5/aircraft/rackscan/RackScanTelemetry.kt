@@ -24,9 +24,14 @@ class RackScanTelemetry {
     // Vertical (elevation) offset of the marker in the frame, normalised to
     // [-1,1]; >0 = marker below centre. Written by the Rack-Mission aligner.
     @Volatile var offsetY: Float       = 0f
-    // True when the aligner has the marker centred on BOTH axes (within deadzone).
+    // True when the aligner has the marker centred on all three axes (within deadzone).
     @Volatile var alignCentered: Boolean = false
-    @Volatile var markerSize: Float    = 0f
+    @Volatile var markerSize: Float    = 0f     // apparent size, sqrt(area)/frameWidth
+    // Metric distance/standoff (Rack-Mission aligner): live estimate + configured targets.
+    @Volatile var distanceM: Float     = 0f     // estimated drone↔marker distance (m)
+    @Volatile var arucoSizeM: Float    = 0.10f  // physical marker side length (m) — set from dashboard
+    @Volatile var standoffM: Float     = 1.0f   // target standoff distance (m) — set from dashboard
+    @Volatile var cameraHfovDeg: Float = 82.0f  // camera horizontal FOV (°) — distance calibration
     @Volatile var visibleIdsCsv: String = ""
 
     // ── Pump output (last tick) ──
@@ -108,6 +113,10 @@ class RackScanTelemetry {
         append("\"offsetY\":").append(offsetY).append(',')
         append("\"alignCentered\":").append(alignCentered).append(',')
         append("\"markerSize\":").append(markerSize).append(',')
+        append("\"distanceM\":").append(distanceM).append(',')
+        append("\"arucoSizeM\":").append(arucoSizeM).append(',')
+        append("\"standoffM\":").append(standoffM).append(',')
+        append("\"cameraHfovDeg\":").append(cameraHfovDeg).append(',')
         append("\"visibleIds\":\"").append(visibleIdsCsv).append("\",")
         append("\"rollPitchControlMode\":\"").append(rollPitchControlMode).append("\",")
         append("\"verticalControlMode\":\"").append(verticalControlMode).append("\",")

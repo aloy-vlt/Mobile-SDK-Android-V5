@@ -25,6 +25,7 @@ import java.util.Timer
 import java.util.TimerTask
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
+import kotlin.math.sqrt
 
 /**
  * Real flight control for the Rack Scan Missioning module — the [MissionExecutor.Host]
@@ -63,10 +64,22 @@ class RackFlightController(
     @Volatile private var targetMarkerId = 0
     @Volatile private var targetRollDeg = 0f      // lateral centering (roll, degrees)
     @Volatile private var targetVz = 0f           // elevation centering (vertical velocity, m/s)
+    @Volatile private var targetPitchDeg = 0f     // distance / standoff (pitch, degrees; +ve = forward)
     @Volatile private var prevOffsetX = 0f
     @Volatile private var prevOffsetY = 0f
+    @Volatile private var prevDistErr = 0f
     @Volatile private var inHoverLock = true
+    @Volatile private var pitchHoverLock = true
     @Volatile private var kickEndsAtMs = 0L
+    @Volatile private var pitchKickEndsAtMs = 0L
+
+    // Metric distance config (set from the dashboard).
+    @Volatile private var markerSizeM = 0.10f      // physical ArUco side length (m)
+    @Volatile private var targetDistanceM = 1.0f   // desired standoff (m)
+    @Volatile private var cameraHfovDeg = CAMERA_HFOV_DEG  // horizontal FOV (°), calibratable
+    // distance(m) = markerSizeM / (2·tan(HFOV/2) · sizeNorm). Frame width cancels,
+    // so only the marker's real size + camera FOV are needed (no per-res calibration).
+    @Volatile private var distK = 1.0 / (2.0 * Math.tan(Math.toRadians(CAMERA_HFOV_DEG / 2.0)))
     @Volatile private var centered = false        // true only when centered on BOTH axes
     @Volatile private var wasDetected = false     // edge-detect so we log acquisition once, not per frame
 
@@ -76,6 +89,9 @@ class RackFlightController(
     fun start() {
         if (pumpTimer != null) return
         telemetry.sweepSpeedMps = sweepSpeedMps
+        telemetry.arucoSizeM = markerSizeM
+        telemetry.standoffM = targetDistanceM
+        telemetry.cameraHfovDeg = cameraHfovDeg.toFloat()
         pumpTimer = Timer("RackMissionPump", true).also {
             it.scheduleAtFixedRate(object : TimerTask() {
                 override fun run() = pumpTick()
@@ -92,6 +108,28 @@ class RackFlightController(
         sweepSpeedMps = mps.coerceIn(MIN_SWEEP_MPS, MAX_SWEEP_MPS)
         telemetry.sweepSpeedMps = sweepSpeedMps
         logs.i(TAG, "Sweep speed set to ${"%.2f".format(sweepSpeedMps)} m/s")
+    }
+
+    /** Physical ArUco marker side length (m) — needed to convert apparent size to metres. */
+    fun setArucoSize(m: Float) {
+        markerSizeM = m.coerceIn(0.02f, 2.0f)
+        telemetry.arucoSizeM = markerSizeM
+        logs.i(TAG, "ArUco marker size set to ${"%.3f".format(markerSizeM)} m")
+    }
+
+    /** Target standoff distance (m) the aligner holds from the marker. */
+    fun setStandoff(m: Float) {
+        targetDistanceM = m.coerceIn(0.3f, 10.0f)
+        telemetry.standoffM = targetDistanceM
+        logs.i(TAG, "Target standoff set to ${"%.2f".format(targetDistanceM)} m")
+    }
+
+    /** Camera horizontal FOV (°) — calibrates the apparent-size→metres conversion. */
+    fun setCameraHfov(deg: Float) {
+        cameraHfovDeg = deg.toDouble().coerceIn(20.0, 160.0)
+        distK = 1.0 / (2.0 * Math.tan(Math.toRadians(cameraHfovDeg / 2.0)))
+        telemetry.cameraHfovDeg = cameraHfovDeg.toFloat()
+        logs.i(TAG, "Camera HFOV set to ${"%.1f".format(cameraHfovDeg)}°")
     }
 
     fun isVSEnabled(): Boolean = vsEnabled
@@ -167,8 +205,9 @@ class RackFlightController(
             arucoReady = true
             logs.i(TAG, "ArUco detector ready (DICT_4X4_50)")
         }
-        prevOffsetX = 0f; prevOffsetY = 0f; inHoverLock = true; kickEndsAtMs = 0L
-        centered = false; targetRollDeg = 0f; targetVz = 0f; wasDetected = false
+        prevOffsetX = 0f; prevOffsetY = 0f; prevDistErr = 0f
+        inHoverLock = true; pitchHoverLock = true; kickEndsAtMs = 0L; pitchKickEndsAtMs = 0L
+        centered = false; targetRollDeg = 0f; targetVz = 0f; targetPitchDeg = 0f; wasDetected = false
         telemetry.currentTargetId = markerId; telemetry.isTracking = true
         state = FlightState.ALIGN
         logs.i(TAG, "Aligning to ArUco marker $markerId")
@@ -177,7 +216,7 @@ class RackFlightController(
     override fun isCentered(): Boolean = state == FlightState.ALIGN && centered
 
     override fun missionStopAndHover() {
-        centered = false; targetRollDeg = 0f; targetVz = 0f; wasDetected = false
+        centered = false; targetRollDeg = 0f; targetVz = 0f; targetPitchDeg = 0f; wasDetected = false
         telemetry.isTracking = false; telemetry.detected = false; telemetry.alignCentered = false
         state = if (vsEnabled) FlightState.HOVER else FlightState.IDLE
     }
@@ -202,27 +241,40 @@ class RackFlightController(
             var detected = false
             var offsetX = 0f
             var offsetY = 0f
+            var sizeNorm = 0f
             if (ids.rows() > 0) {
                 for (i in 0 until ids.rows()) {
                     if (ids[i, 0][0].toInt() == targetMarkerId) {
                         detected = true
                         val mc = corners[i]
-                        var sx = 0.0; var sy = 0.0
-                        for (j in 0 until 4) { sx += mc[0, j][0]; sy += mc[0, j][1] }
-                        val cx = (sx / 4.0).toFloat(); val cy = (sy / 4.0).toFloat()
+                        val px = FloatArray(4); val py = FloatArray(4)
+                        for (j in 0 until 4) { px[j] = mc[0, j][0].toFloat(); py[j] = mc[0, j][1].toFloat() }
+                        val cx = (px[0] + px[1] + px[2] + px[3]) / 4f
+                        val cy = (py[0] + py[1] + py[2] + py[3]) / 4f
                         offsetX = (cx - width / 2f) / (width / 2f)
                         offsetY = (cy - height / 2f) / (height / 2f)   // >0 = marker below frame centre
+                        // Apparent size = sqrt(quad area) (shoelace), normalised to frame width.
+                        // Bigger = closer; this is the proxy for distance/standoff.
+                        var area2 = 0.0
+                        for (j in 0 until 4) { val k = (j + 1) % 4; area2 += px[j] * py[k] - px[k] * py[j] }
+                        sizeNorm = (sqrt(abs(area2) / 2.0).toFloat()) / width
                         break
                     }
                 }
             }
             if (detected) {
-                targetRollDeg = computeRoll(offsetX)        // lateral
-                targetVz      = computeVertical(offsetY)    // elevation
-                centered = abs(offsetX) < DEAD_ZONE && abs(offsetY) < DEAD_ZONE_Y
+                val distM = distanceFromSize(sizeNorm)       // metres
+                targetRollDeg  = computeRoll(offsetX)        // lateral (roll)
+                targetVz       = computeVertical(offsetY)    // elevation (vertical velocity)
+                targetPitchDeg = computePitch(distM)         // distance / standoff (pitch)
+                centered = abs(offsetX) < DEAD_ZONE &&
+                           abs(offsetY) < DEAD_ZONE_Y &&
+                           abs(distM - targetDistanceM) < DIST_DEADZONE_M
+                telemetry.distanceM = distM
             } else {
-                targetRollDeg = 0f; targetVz = 0f; centered = false
-                prevOffsetX = 0f; prevOffsetY = 0f; inHoverLock = true
+                targetRollDeg = 0f; targetVz = 0f; targetPitchDeg = 0f; centered = false
+                prevOffsetX = 0f; prevOffsetY = 0f; prevDistErr = 0f; inHoverLock = true; pitchHoverLock = true
+                telemetry.distanceM = 0f
             }
             // Log acquisition/loss on the edge only (this runs every frame).
             if (detected != wasDetected) {
@@ -233,6 +285,7 @@ class RackFlightController(
             telemetry.detected = detected
             telemetry.offsetX = offsetX
             telemetry.offsetY = offsetY
+            telemetry.markerSize = sizeNorm
             telemetry.alignCentered = centered
         } catch (t: Throwable) {
             Log.w(TAG, "align detect: ${t.message}")
@@ -255,6 +308,26 @@ class RackFlightController(
             ratio = if (ratio > 0) KICK_RATIO else -KICK_RATIO
         ratio = ratio.coerceIn(-MAX_ROLL_RATIO, MAX_ROLL_RATIO)
         return ratio * MAX_ROLL_ANGLE_DEG
+    }
+
+    /** Estimated drone↔marker distance in metres from the marker's apparent size.
+     *  distance = markerSizeM / (2·tan(HFOV/2) · sizeNorm). */
+    private fun distanceFromSize(sizeNorm: Float): Float =
+        if (sizeNorm <= 1e-4f) 99f else (markerSizeM * distK / sizeNorm).toFloat()
+
+    /** PD (in metres) → pitch angle (degrees) to hold the standoff. Too far
+     *  (distance > target) → pitch forward to approach; too close → pitch back.
+     *  Same kickstart/clamp shape as [computeRoll]. Gentle by design — forward
+     *  motion is toward the rack and obstacle-avoidance is bypassed in ANGLE mode. */
+    private fun computePitch(distM: Float): Float {
+        val err = distM - targetDistanceM            // >0 = too far → move forward (+pitch)
+        if (abs(err) < DIST_DEADZONE_M) { prevDistErr = err; pitchHoverLock = true; return 0f }
+        var deg = PITCH_KP_DEG_PER_M * err + PITCH_KD * (err - prevDistErr)
+        prevDistErr = err
+        if (pitchHoverLock) { pitchHoverLock = false; pitchKickEndsAtMs = System.currentTimeMillis() + KICK_DURATION_MS }
+        if (System.currentTimeMillis() < pitchKickEndsAtMs && abs(deg) > 0f && abs(deg) < KICK_PITCH_DEG)
+            deg = if (deg > 0) KICK_PITCH_DEG else -KICK_PITCH_DEG
+        return deg.coerceIn(-MAX_PITCH_ANGLE_DEG, MAX_PITCH_ANGLE_DEG)   // +ve = forward (approach)
     }
 
     /** PD → vertical velocity (m/s) to center the marker's elevation. Marker
@@ -298,10 +371,11 @@ class RackFlightController(
                     pitch = sweepSpeedMps.toDouble() * dir
                     roll  = 0.0
                 } else {
-                    // HOVER and ALIGN both use ANGLE; ALIGN drives roll to center the marker.
+                    // HOVER and ALIGN both use ANGLE. ALIGN drives roll (lateral
+                    // centering) AND pitch (forward/back to hold the standoff).
                     rollPitchControlMode = RollPitchControlMode.ANGLE
-                    pitch = 0.0
-                    roll  = if (s == FlightState.ALIGN) targetRollDeg.toDouble() else 0.0
+                    roll  = if (s == FlightState.ALIGN) targetRollDeg.toDouble()  else 0.0
+                    pitch = if (s == FlightState.ALIGN) targetPitchDeg.toDouble() else 0.0
                 }
             }
             VirtualStickManager.getInstance().sendVirtualStickAdvancedParam(param)
@@ -344,5 +418,14 @@ class RackFlightController(
         private const val V_D_GAIN = 0.3f
         private const val MAX_V_MPS = 0.3f
         private const val MIN_V_MPS = 0.08f   // floor to beat the FC velocity filter
+        // Distance / standoff centering — pitch (forward/back), metric. Distance is
+        // estimated from the marker's apparent size + its physical size + camera FOV.
+        // Kept gentle — forward is toward the rack and obstacle-avoidance is bypassed.
+        private const val CAMERA_HFOV_DEG = 82.0     // DJI Mini 4 Pro main cam ≈ 82°; tune per airframe
+        private const val DIST_DEADZONE_M = 0.10f    // ±10 cm "close enough"
+        private const val PITCH_KP_DEG_PER_M = 6.0f  // 1 m of distance error → 6° tilt (capped)
+        private const val PITCH_KD = 2.0f
+        private const val KICK_PITCH_DEG = 2.0f      // min effective tilt out of hover-lock
+        private const val MAX_PITCH_ANGLE_DEG = 6.0f // gentle approach cap
     }
 }
