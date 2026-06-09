@@ -331,7 +331,7 @@ class RackFlightController(
         // ArUco centering (mirrors DashboardServerVM constants)
         // DEAD_ZONE = "close enough" tolerance: bigger = stops correcting sooner
         // (less fidgeting), smaller = tries harder to perfectly centre.
-        private const val DEAD_ZONE = 0.10f
+        private const val DEAD_ZONE = 0.30f
         private const val MAX_ROLL_RATIO = 0.6f
         private const val MAX_ROLL_ANGLE_DEG = 15.0f
         private const val KICK_RATIO = 0.25f
@@ -339,7 +339,7 @@ class RackFlightController(
         private const val P_GAIN = 0.15f
         private const val D_GAIN = 0.10f
         // Vertical (elevation) centering — VELOCITY-mode m/s, gentle for indoor.
-        private const val DEAD_ZONE_Y = 0.12f
+        private const val DEAD_ZONE_Y = 0.30f
         private const val V_P_GAIN = 0.6f
         private const val V_D_GAIN = 0.3f
         private const val MAX_V_MPS = 0.3f
