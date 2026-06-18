@@ -95,6 +95,14 @@
   .live-badge b{color:var(--danger)} .feedwrap.live .live-badge b{color:var(--ok)}
   .feedmeta{position:absolute; bottom:10px; left:12px; font-family:var(--mono); font-size:11px;
     color:var(--txt-2); background:rgba(5,8,13,.55); padding:3px 9px; border-radius:5px}
+  /* ArUco distance HUD (top-right of the feed); lights up when a marker is tracked */
+  .dist-hud{position:absolute; top:10px; right:10px; display:flex; flex-direction:column; align-items:flex-end;
+    gap:2px; padding:6px 12px; border-radius:8px; background:rgba(5,8,13,.66); border:1px solid var(--border-2);
+    font-family:var(--mono); color:var(--txt-3); transition:color .15s, border-color .15s}
+  .dist-hud.on{color:var(--ok); border-color:var(--ok)}
+  .dist-hud .d{font-size:22px; font-weight:700; line-height:1}
+  .dist-hud .d small{font-size:12px; font-weight:500; opacity:.7}
+  .dist-hud .sub{font-size:10px; letter-spacing:.1em; color:var(--txt-3)}
 
   /* ─── Mini drone-centered mission map (overlay, bottom-right of the feed) ─── */
   .minimap{position:absolute; bottom:10px; right:10px; width:204px; height:136px;
@@ -258,6 +266,10 @@
           <div>Connect the aircraft and start the dashboard from the mobile app.</div>
         </div>
         <div class="live-badge"><b>●</b> <span id="liveTxt">NO SIGNAL</span></div>
+        <div class="dist-hud" id="distHud">
+          <div class="d" id="distVal">—<small> m</small></div>
+          <div class="sub" id="distSub">ARUCO DISTANCE</div>
+        </div>
         <div class="feedmeta" id="feedMeta">— fps · —×—</div>
         <canvas id="minimap" class="minimap" title="Mission map · drone-centered"></canvas>
       </div>
@@ -475,9 +487,22 @@ function apply(d){
   $("mBar").style.width=(total>0?Math.round(((cur<0?0:cur+ (running?0.5:0))/total)*100):0)+"%";
   if(running && tel.stateName==="ALIGN"){
     const c = tel.detected ? (tel.alignCentered ? "· CENTERED" : "· centering") : "· no marker";
-    $("mElapsed").textContent = `ALIGN #${tel.currentTargetId|0} · x ${fmt(tel.offsetX,2)} · y ${fmt(tel.offsetY,2)} · ${fmt(tel.distanceM,2)}m/${fmt(tel.standoffM,1)}m ${c}`;
+    const ph = tel.alignPhase && tel.alignPhase!=="—" ? `[${tel.alignPhase}] ` : "";
+    $("mElapsed").textContent = `ALIGN #${tel.currentTargetId|0} ${ph}· x ${fmt(tel.offsetX,2)} · y ${fmt(tel.offsetY,2)} · ${fmt(tel.distanceM,2)}m/${fmt(tel.standoffM,1)}m ${c}`;
   } else {
     $("mElapsed").textContent = running&&cur>=0 ? `running step ${cur+1}` : "step —";
+  }
+  // ArUco distance HUD on the feed — live whenever the aligner sees the marker.
+  // poseValid distinguishes calibrated solvePnP ("PnP") from the size heuristic ("est").
+  const det=!!tel.detected;
+  $("distHud").className="dist-hud"+(det?" on":"");
+  if(det){
+    $("distVal").innerHTML=fmt(tel.distanceM,2)+'<small> m</small>';
+    const id=(tel.detectedId!=null && tel.detectedId>=0)?`#${tel.detectedId} · `:"";
+    $("distSub").textContent=`${id}${tel.poseValid?"PnP":"est"}`;
+  } else {
+    $("distVal").innerHTML='—<small> m</small>';
+    $("distSub").textContent="ARUCO DISTANCE";
   }
   // button gating
   $("btnEnableVS").disabled=vsOn;

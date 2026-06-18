@@ -280,6 +280,17 @@
       <input type="range" id="dgain" min="0" max="30" value="10" />
     </div>
 
+    <h2>Calibration Capture</h2>
+    <!-- Saves the current camera frame as a PNG at NATIVE resolution for
+         offline checkerboard calibration (tools/camera-calibration/). Drag the
+         drone by hand, point at the board, click Capture. Pull the downloads
+         into ./captures and run calibrate.py. -->
+    <div class="row3">
+      <button class="ctrl go" id="btn-snap">📷 Capture</button>
+      <button class="ctrl" id="btn-snap-reset">Reset #</button>
+      <div class="v" id="snap-count" style="align-self:center;text-align:center">0 saved</div>
+    </div>
+
     <h2>Telemetry</h2>
 
     <div class="tile">
@@ -704,6 +715,33 @@
     if (confirm("Enable Virtual Stick? This hands flight control to MSDK.")) send("enableVS");
   };
   $("btn-vs-off").onclick  = () => send("disableVS");
+  // --- Calibration frame capture (client-side; no drone command) ---
+  // Draws the live <img> onto a canvas at its NATIVE resolution and downloads
+  // it as PNG. The <img> src is a same-origin blob URL, so the canvas is not
+  // tainted and toBlob() works. Resolution here == the resolution the ArUco
+  // detector consumes, which is exactly what calibrate.py must be fed.
+  let snapCount = 0;
+  function captureFrame() {
+    const img = $("img");
+    const w = img.naturalWidth, h = img.naturalHeight;
+    if (!w || !h) { alert("No frame yet — wait for the live feed."); return; }
+    const cv = document.createElement("canvas");
+    cv.width = w; cv.height = h;
+    cv.getContext("2d").drawImage(img, 0, 0, w, h);
+    cv.toBlob((blob) => {
+      if (!blob) { alert("Capture failed."); return; }
+      const n = String(++snapCount).padStart(3, "0");
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `calib_${n}_${w}x${h}.png`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      $("snap-count").textContent = `${snapCount} saved · ${w}×${h}`;
+    }, "image/png");
+  }
+  $("btn-snap").onclick = captureFrame;
+  $("btn-snap-reset").onclick = () => { snapCount = 0; $("snap-count").textContent = "0 saved"; };
+
   $("btn-track-on").onclick  = () => send("startTrack");
   $("btn-track-off").onclick = () => send("stopTrack");
 

@@ -123,7 +123,11 @@ class RackScanMissionVM(app: Application) : AndroidViewModel(app), DashboardServ
         encoderExec.execute {
             try {
                 frameW = width; frameH = height
-                if (flight.isAligning()) flight.processAlignFrame(copy, width, height)
+                // Always run detection while the dashboard is watching (the outer
+                // guard already ensured a client is connected or we're aligning),
+                // so the live ArUco distance shows even outside an ALIGN step.
+                // The controller only issues flight commands when state == ALIGN.
+                flight.processAlignFrame(copy, width, height)
                 if (srv.clientCount() > 0) {
                     srv.pushJpegFrame(nv21ToJpeg(copy, width, height, JPEG_QUALITY))
                     tickFps()
