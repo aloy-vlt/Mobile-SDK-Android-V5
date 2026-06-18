@@ -29,9 +29,10 @@ class RackScanTelemetry {
     @Volatile var offsetY: Float       = 0f
     // True when the aligner has the marker centred on all three axes (within deadzone).
     @Volatile var alignCentered: Boolean = false
-    // Current sequential-align stage: VERTICAL → LATERAL → DISTANCE → DONE (or "—").
-    @Volatile var alignPhase: String   = "—"
     @Volatile var markerSize: Float    = 0f     // apparent size, sqrt(area)/frameWidth
+    // Tracked marker's 4 corner pixel coords in the camera frame as raw JSON
+    // "[[x0,y0],...]" (or "null"). Browser draws the bbox + line overlay from this.
+    @Volatile var markerCornersJson: String = "null"
     // Metric distance/standoff (Rack-Mission aligner): live estimate + configured targets.
     @Volatile var distanceM: Float     = 0f     // estimated drone↔marker distance (m)
     // Metric marker pose in the CAMERA frame, from solvePnP (m). X = right,
@@ -43,7 +44,6 @@ class RackScanTelemetry {
     @Volatile var poseValid: Boolean   = false  // true when distanceM came from solvePnP, not the heuristic
     @Volatile var arucoSizeM: Float    = 0.10f  // physical marker side length (m) — set from dashboard
     @Volatile var standoffM: Float     = 1.0f   // target standoff distance (m) — set from dashboard
-    @Volatile var cameraHfovDeg: Float = 82.0f  // camera horizontal FOV (°) — distance calibration
     @Volatile var visibleIdsCsv: String = ""
 
     // ── Pump output (last tick) ──
@@ -125,8 +125,8 @@ class RackScanTelemetry {
         append("\"offsetX\":").append(offsetX).append(',')
         append("\"offsetY\":").append(offsetY).append(',')
         append("\"alignCentered\":").append(alignCentered).append(',')
-        append("\"alignPhase\":\"").append(alignPhase).append("\",")
         append("\"markerSize\":").append(markerSize).append(',')
+        append("\"markerCorners\":").append(markerCornersJson).append(',')
         append("\"distanceM\":").append(distanceM).append(',')
         append("\"posX\":").append(posX).append(',')
         append("\"posY\":").append(posY).append(',')
@@ -134,7 +134,6 @@ class RackScanTelemetry {
         append("\"poseValid\":").append(poseValid).append(',')
         append("\"arucoSizeM\":").append(arucoSizeM).append(',')
         append("\"standoffM\":").append(standoffM).append(',')
-        append("\"cameraHfovDeg\":").append(cameraHfovDeg).append(',')
         append("\"visibleIds\":\"").append(visibleIdsCsv).append("\",")
         append("\"rollPitchControlMode\":\"").append(rollPitchControlMode).append("\",")
         append("\"verticalControlMode\":\"").append(verticalControlMode).append("\",")

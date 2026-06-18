@@ -59,10 +59,6 @@ class RackFlightController(
 
     enum class FlightState { IDLE, HOVER, SWEEP_LEFT, SWEEP_RIGHT, CLIMB_UP, CLIMB_DOWN, ALIGN }
 
-    /** ALIGN aligns one axis at a time, in this order, so each command is isolated
-     *  and the multi-axis coupling (which looked like circular drift) is gone. */
-    enum class AlignPhase { VERTICAL, LATERAL, DISTANCE, DONE }
-
     @Volatile var sweepSpeedMps: Float = DEFAULT_SWEEP_SPEED_MPS
     @Volatile private var state: FlightState = FlightState.IDLE
     @Volatile private var vsEnabled = false
@@ -98,17 +94,16 @@ class RackFlightController(
     @Volatile private var prevOffsetY = 0f
     @Volatile private var prevDistErr = 0f
     @Volatile private var inHoverLock = true      // true when not actively correcting laterally (telemetry/HUD)
-    // Sequential-align sub-state machine.
-    @Volatile private var alignPhase = AlignPhase.VERTICAL
-    @Volatile private var phaseInZoneSinceMs = 0L // when the active axis first entered its deadzone (0 = not in zone)
+    // Marker ids seen in the most recent processed frame (for markerVisible()).
+    @Volatile private var visibleIdSet: Set<Int> = emptySet()
 
     // Metric distance config (set from the dashboard).
     @Volatile private var markerSizeM = 0.10f      // physical ArUco side length (m)
-    @Volatile private var targetDistanceM = 1.0f   // desired standoff (m)
-    @Volatile private var cameraHfovDeg = CAMERA_HFOV_DEG  // horizontal FOV (°), calibratable
-    // distance(m) = markerSizeM / (2·tan(HFOV/2) · sizeNorm). Frame width cancels,
-    // so only the marker's real size + camera FOV are needed (no per-res calibration).
-    @Volatile private var distK = 1.0 / (2.0 * Math.tan(Math.toRadians(CAMERA_HFOV_DEG / 2.0)))
+    @Volatile private var targetDistanceM = 0.2f   // desired standoff (m)
+    // Fallback-distance constant for [distanceFromSize] (used only if solvePnP fails).
+    // distance(m) = markerSizeM · distK / sizeNorm, where distK = fx/width is the
+    // resolution-independent calibrated focal ratio — consistent with solvePnP, no FOV.
+    private val distK = CameraIntrinsics.FX / CameraIntrinsics.CALIB_WIDTH
     @Volatile private var centered = false        // true only when centered on BOTH axes
     @Volatile private var wasDetected = false     // edge-detect so we log acquisition once, not per frame
 
@@ -120,7 +115,6 @@ class RackFlightController(
         telemetry.sweepSpeedMps = sweepSpeedMps
         telemetry.arucoSizeM = markerSizeM
         telemetry.standoffM = targetDistanceM
-        telemetry.cameraHfovDeg = cameraHfovDeg.toFloat()
         pumpTimer = Timer("RackMissionPump", true).also {
             it.scheduleAtFixedRate(object : TimerTask() {
                 override fun run() = pumpTick()
@@ -150,17 +144,9 @@ class RackFlightController(
 
     /** Target standoff distance (m) the aligner holds from the marker. */
     fun setStandoff(m: Float) {
-        targetDistanceM = m.coerceIn(0.3f, 10.0f)
+        targetDistanceM = m.coerceIn(0.2f, 10.0f)
         telemetry.standoffM = targetDistanceM
         logs.i(TAG, "Target standoff set to ${"%.2f".format(targetDistanceM)} m")
-    }
-
-    /** Camera horizontal FOV (°) — calibrates the apparent-size→metres conversion. */
-    fun setCameraHfov(deg: Float) {
-        cameraHfovDeg = deg.toDouble().coerceIn(20.0, 160.0)
-        distK = 1.0 / (2.0 * Math.tan(Math.toRadians(cameraHfovDeg / 2.0)))
-        telemetry.cameraHfovDeg = cameraHfovDeg.toFloat()
-        logs.i(TAG, "Camera HFOV set to ${"%.1f".format(cameraHfovDeg)}°")
     }
 
     fun isVSEnabled(): Boolean = vsEnabled
@@ -234,19 +220,19 @@ class RackFlightController(
         prevOffsetX = 0f; prevOffsetY = 0f; prevDistErr = 0f
         inHoverLock = true
         centered = false; targetRollVel = 0f; targetVz = 0f; targetPitchVel = 0f; wasDetected = false
-        alignPhase = AlignPhase.VERTICAL; phaseInZoneSinceMs = 0L
-        telemetry.alignPhase = alignPhase.name
         telemetry.currentTargetId = markerId; telemetry.isTracking = true
         state = FlightState.ALIGN
         logs.i(TAG, "Aligning to ArUco marker $markerId")
-        logs.i(TAG, "[ALIGN] ▸ start → ${phaseLabel(AlignPhase.VERTICAL)}")
     }
 
     override fun isCentered(): Boolean = state == FlightState.ALIGN && centered
 
+    /** True if [markerId] was in the most recent processed camera frame. Lets the
+     *  mission cut a sweep short the moment the next target comes into view. */
+    override fun markerVisible(markerId: Int): Boolean = visibleIdSet.contains(markerId)
+
     override fun missionStopAndHover() {
         centered = false; targetRollVel = 0f; targetVz = 0f; targetPitchVel = 0f; wasDetected = false
-        phaseInZoneSinceMs = 0L; telemetry.alignPhase = "—"
         telemetry.isTracking = false; telemetry.detected = false; telemetry.alignCentered = false
         state = if (vsEnabled) FlightState.HOVER else FlightState.IDLE
     }
@@ -284,6 +270,12 @@ class RackFlightController(
             var cornerPx: FloatArray? = null   // chosen marker corners, for solvePnP
             var cornerPy: FloatArray? = null
             if (ids.rows() > 0) {
+                // Publish every visible marker id (for markerVisible() / the
+                // dashboard) — this is how a sweep spots the next target early.
+                val seen = HashSet<Int>(ids.rows())
+                for (i in 0 until ids.rows()) seen.add(ids[i, 0][0].toInt())
+                visibleIdSet = seen
+                telemetry.visibleIdsCsv = seen.joinToString(",")
                 // While aligning, only the configured target may drive control.
                 // While measuring, take the first marker the detector returns.
                 var idx = -1
@@ -308,6 +300,9 @@ class RackFlightController(
                     for (j in 0 until 4) { val k = (j + 1) % 4; area2 += px[j] * py[k] - px[k] * py[j] }
                     sizeNorm = (sqrt(abs(area2) / 2.0).toFloat()) / width
                 }
+            } else {
+                visibleIdSet = emptySet()
+                telemetry.visibleIdsCsv = ""
             }
             if (detected) {
                 // solvePnP gives the true metric standoff (Z along the optical
@@ -321,49 +316,24 @@ class RackFlightController(
                 telemetry.posY = pose?.get(1)?.toFloat() ?: 0f
                 telemetry.posZ = pose?.get(2)?.toFloat() ?: 0f
                 if (aligning) {
-                    // Sequential alignment: only the active phase's axis is driven;
-                    // the others are held at 0. Advance once the active axis holds
-                    // inside its deadzone for PHASE_SETTLE_MS. Isolating one axis at
-                    // a time removes the multi-axis coupling that looked circular.
-                    targetVz = 0f; targetRollVel = 0f; targetPitchVel = 0f
-                    val now = System.currentTimeMillis()
-                    when (alignPhase) {
-                        AlignPhase.VERTICAL -> {
-                            targetVz = computeVertical(offsetY)
-                            if (settled(abs(offsetY) < DEAD_ZONE_Y, now)) {
-                                prevOffsetX = offsetX  // seed D-term for the next axis
-                                setAlignPhase(AlignPhase.LATERAL, "elevation centered (y=${"%.2f".format(offsetY)})")
-                            }
-                        }
-                        AlignPhase.LATERAL -> {
-                            // Lateral centering drives the PITCH axis (see AXIS MAPPING).
-                            targetPitchVel = computeLateralVel(offsetX)
-                            if (settled(abs(offsetX) < DEAD_ZONE, now)) {
-                                prevDistErr = distM - targetDistanceM
-                                setAlignPhase(AlignPhase.DISTANCE, "lateral centered (x=${"%.2f".format(offsetX)})")
-                            }
-                        }
-                        AlignPhase.DISTANCE -> {
-                            // Standoff/depth drives the ROLL axis (see AXIS MAPPING).
-                            targetRollVel = computeApproachVel(distM)
-                            if (settled(abs(distM - targetDistanceM) < DIST_DEADZONE_M, now)) {
-                                setAlignPhase(AlignPhase.DONE, "distance held (${"%.2f".format(distM)} m)")
-                            }
-                        }
-                        AlignPhase.DONE -> { /* aligned — hold all axes at 0 */ }
-                    }
-                    centered = alignPhase == AlignPhase.DONE
+                    // All three axes corrected simultaneously. AXIS MAPPING (see
+                    // field declarations): lateral centering drives PITCH, standoff
+                    // /depth drives ROLL, elevation drives vertical.
+                    targetPitchVel = computeLateralVel(offsetX)   // lateral (pitch axis)
+                    targetRollVel  = computeApproachVel(distM)    // standoff (roll axis)
+                    targetVz       = computeVertical(offsetY)     // elevation (vertical)
+                    centered = abs(offsetX) < DEAD_ZONE &&
+                               abs(offsetY) < DEAD_ZONE_Y &&
+                               abs(distM - targetDistanceM) < DIST_DEADZONE_M
                 }
             } else {
                 telemetry.distanceM = 0f
                 telemetry.poseValid = false; telemetry.posX = 0f; telemetry.posY = 0f; telemetry.posZ = 0f
                 if (aligning) {
                     // Marker lost mid-align → command zero velocity on all axes so
-                    // the FC brakes and holds. Keep the phase, but make the active
-                    // axis re-settle on reacquire (don't credit time spent blind).
+                    // the FC brakes and holds, rather than coasting.
                     targetRollVel = 0f; targetVz = 0f; targetPitchVel = 0f; centered = false
                     prevOffsetX = 0f; prevOffsetY = 0f; prevDistErr = 0f; inHoverLock = true
-                    phaseInZoneSinceMs = 0L
                 }
             }
             // Acquisition/loss logging only matters for an active align (else it
@@ -379,34 +349,15 @@ class RackFlightController(
             telemetry.offsetY = offsetY
             telemetry.markerSize = sizeNorm
             telemetry.alignCentered = aligning && centered
+            val px = cornerPx; val py = cornerPy
+            telemetry.markerCornersJson = if (detected && px != null && py != null)
+                "[[${px[0]},${py[0]}],[${px[1]},${py[1]}],[${px[2]},${py[2]}],[${px[3]},${py[3]}]]"
+            else "null"
         } catch (t: Throwable) {
             Log.w(TAG, "align detect: ${t.message}")
         } finally {
             gray.release(); ids.release(); corners.forEach { it.release() }; yuvMat.release()
         }
-    }
-
-    /** True once [inZone] has held continuously for [PHASE_SETTLE_MS]; resets the
-     *  timer the moment the axis leaves its deadzone (so a brief dip doesn't count). */
-    private fun settled(inZone: Boolean, nowMs: Long): Boolean {
-        if (!inZone) { phaseInZoneSinceMs = 0L; return false }
-        if (phaseInZoneSinceMs == 0L) phaseInZoneSinceMs = nowMs
-        return nowMs - phaseInZoneSinceMs >= PHASE_SETTLE_MS
-    }
-
-    /** Advance the sequential-align state machine, mirror it to telemetry, and log. */
-    private fun setAlignPhase(next: AlignPhase, reason: String) {
-        alignPhase = next
-        phaseInZoneSinceMs = 0L
-        telemetry.alignPhase = next.name
-        logs.i(TAG, "[ALIGN] ▸ $reason → ${phaseLabel(next)}")
-    }
-
-    private fun phaseLabel(p: AlignPhase): String = when (p) {
-        AlignPhase.VERTICAL -> "elevation (up/down)"
-        AlignPhase.LATERAL  -> "lateral (left/right)"
-        AlignPhase.DISTANCE -> "distance (forward/back)"
-        AlignPhase.DONE     -> "DONE (centered)"
     }
 
     /** Lazily build the ArUco detector so detection (for live distance preview)
@@ -435,9 +386,9 @@ class RackFlightController(
         return v.coerceIn(-MAX_LAT_MPS, MAX_LAT_MPS)
     }
 
-    /** Estimated drone↔marker distance in metres from the marker's apparent size.
-     *  distance = markerSizeM / (2·tan(HFOV/2) · sizeNorm). Fallback only — used
-     *  when [estimatePose] fails; solvePnP is the primary path. */
+    /** Estimated drone↔marker distance in metres from the marker's apparent size,
+     *  using the calibrated focal ratio [distK]. Fallback only — used when
+     *  [estimatePose] fails; solvePnP is the primary path. */
     private fun distanceFromSize(sizeNorm: Float): Float =
         if (sizeNorm <= 1e-4f) 99f else (markerSizeM * distK / sizeNorm).toFloat()
 
@@ -587,9 +538,6 @@ class RackFlightController(
         private const val DEFAULT_SWEEP_SPEED_MPS = 0.30f   // gentle indoor sweep
         private const val MIN_SWEEP_MPS = 0.05f
         private const val MAX_SWEEP_MPS = 1.0f
-        // Sequential align: how long the active axis must hold inside its deadzone
-        // before advancing to the next axis (debounces noise / brief overshoot).
-        private const val PHASE_SETTLE_MS = 500L
         // ArUco centering — all axes VELOCITY-mode m/s, gentle for indoor flight.
         // DEAD_ZONE = "close enough" tolerance: bigger = stops correcting sooner
         // (less fidgeting), smaller = tries harder to perfectly centre.
@@ -597,22 +545,22 @@ class RackFlightController(
         // Lateral (roll) centering — body-right velocity from normalised offsetX.
         private const val LAT_P_GAIN = 0.40f
         private const val LAT_D_GAIN = 0.20f
-        private const val MAX_LAT_MPS = 0.25f
+        private const val MAX_LAT_MPS = 0.20f
         private const val MIN_LAT_MPS = 0.06f   // floor to beat the FC velocity filter
-        // Vertical (elevation) centering — VELOCITY-mode m/s, gentle for indoor.
-        private const val DEAD_ZONE_Y = 0.12f
+        // Vertical (elevation) centering — VELOCITY-mode m/s, kept slow + smooth
+        // (a wider deadzone + small floor stop the up/down limit-cycle hunting).
+        private const val DEAD_ZONE_Y = 0.16f
         private const val V_P_GAIN = 0.6f
         private const val V_D_GAIN = 0.3f
-        private const val MAX_V_MPS = 0.3f
-        private const val MIN_V_MPS = 0.08f   // floor to beat the FC velocity filter
+        private const val MAX_V_MPS = 0.10f   // gentle cap — ~10 cm/s
+        private const val MIN_V_MPS = 0.05f   // floor to beat the FC velocity filter (smaller = less jolt)
         // Distance / standoff hold — forward/back VELOCITY (m/s), metric. Speed is
         // capped deliberately low: forward is toward the rack and obstacle-avoidance
         // is bypassed, so this is the safety-critical axis. 0 = hold (FC brakes).
-        private const val CAMERA_HFOV_DEG = 82.0       // fallback heuristic only (solvePnP is primary)
-        private const val DIST_DEADZONE_M = 0.10f      // ±10 cm "close enough"
+        private const val DIST_DEADZONE_M = 0.05f      // ±5 cm "close enough" (tight — standoff can be as low as 0.2 m)
         private const val APPROACH_KP_MPS_PER_M = 0.30f // 1 m of error → 0.30 m/s (capped well below)
         private const val APPROACH_KD = 0.10f
         private const val MIN_APPROACH_MPS = 0.05f     // floor so the last bit still closes
-        private const val MAX_APPROACH_MPS = 0.15f     // HARD speed cap — ~15 cm/s, intentionally slow
+        private const val MAX_APPROACH_MPS = 0.05f     // HARD speed cap — 5 cm/s, intentionally very slow
     }
 }

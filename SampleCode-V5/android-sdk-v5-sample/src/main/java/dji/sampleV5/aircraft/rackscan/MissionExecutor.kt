@@ -44,6 +44,10 @@ class MissionExecutor(private val host: Host, private val telemetry: RackScanTel
         /** True once the target marker is centered in the frame. Default true
          *  so a non-vision host treats an ALIGN step as an instant pass. */
         fun isCentered(): Boolean = true
+        /** True if [markerId] is visible in the latest camera frame. Lets a sweep
+         *  end early the moment the next target comes into view. Default false so
+         *  non-vision hosts keep fixed-duration sweeps. */
+        fun markerVisible(markerId: Int): Boolean = false
     }
 
     private val exec = Executors.newSingleThreadExecutor { r ->
@@ -87,7 +91,7 @@ class MissionExecutor(private val host: Host, private val telemetry: RackScanTel
                     telemetry.missionCurrentStep = idx
                     telemetry.missionStepStartedMs = System.currentTimeMillis()
                     logs.i(TAG, "Mission step ${idx + 1}/${steps.size}: ${describeStep(step)}")
-                    runStep(step)
+                    runStep(step, nextAlignMarker(steps, idx, loop))
                     if (!requestStop) sleepInterruptible(300)
                 }
                 lap++
@@ -106,16 +110,47 @@ class MissionExecutor(private val host: Host, private val telemetry: RackScanTel
         }
     }
 
-    private fun runStep(step: MissionStep) {
+    private fun runStep(step: MissionStep, nextAlignMarkerId: Int) {
         when (step) {
-            is MissionStep.Left  -> { host.missionStartLeft();  sleepSeconds(step.seconds); host.missionStopAndHover() }
-            is MissionStep.Right -> { host.missionStartRight(); sleepSeconds(step.seconds); host.missionStopAndHover() }
+            is MissionStep.Left  -> runSweep(left = true,  seconds = step.seconds, nextAlignMarkerId = nextAlignMarkerId)
+            is MissionStep.Right -> runSweep(left = false, seconds = step.seconds, nextAlignMarkerId = nextAlignMarkerId)
             is MissionStep.Hover -> { host.missionStopAndHover(); sleepSeconds(step.seconds) }
-            is MissionStep.Up    -> runVerticalStep(step.distanceM, up = true)
-            is MissionStep.Down  -> runVerticalStep(step.distanceM, up = false)
+            is MissionStep.Up    -> runVerticalStep(step.distanceM, up = true,  nextAlignMarkerId = nextAlignMarkerId)
+            is MissionStep.Down  -> runVerticalStep(step.distanceM, up = false, nextAlignMarkerId = nextAlignMarkerId)
             is MissionStep.AlignAruco -> runAlignStep(step.markerId)
             MissionStep.Land     -> runLandStep()
         }
+    }
+
+    /** Sweep LEFT/RIGHT for up to [seconds], but END EARLY the moment the next
+     *  mission's target marker ([nextAlignMarkerId], -1 if none) comes into view
+     *  — so the following ALIGN step latches onto it without sweeping blind for
+     *  the full duration. Detection runs continuously during the mission, so the
+     *  visibility check just reads the latest frame's result. */
+    private fun runSweep(left: Boolean, seconds: Float, nextAlignMarkerId: Int) {
+        if (left) host.missionStartLeft() else host.missionStartRight()
+        val deadline = System.currentTimeMillis() + (seconds * 1000).toLong()
+        var seenStreak = 0
+        while (!requestStop && System.currentTimeMillis() < deadline) {
+            if (nextAlignMarkerId >= 0 && host.markerVisible(nextAlignMarkerId)) {
+                if (++seenStreak >= EARLY_DETECT_FRAMES) {
+                    logs.i(TAG, "Next marker $nextAlignMarkerId sighted mid-sweep — ending sweep early to align")
+                    break
+                }
+            } else {
+                seenStreak = 0
+            }
+            sleepInterruptible(SWEEP_POLL_MS)
+        }
+        host.missionStopAndHover()
+    }
+
+    /** Marker id of the next ALIGN step after [fromIdx] (wrapping if [loop]), or
+     *  -1 if none — i.e. the marker a sweep should watch for to end early. */
+    private fun nextAlignMarker(steps: List<MissionStep>, fromIdx: Int, loop: Boolean): Int {
+        for (i in fromIdx + 1 until steps.size) (steps[i] as? MissionStep.AlignAruco)?.let { return it.markerId }
+        if (loop) for (i in 0..fromIdx) (steps[i] as? MissionStep.AlignAruco)?.let { return it.markerId }
+        return -1
     }
 
     /** Hold while the host centers the target ArUco marker. Proceeds once the
@@ -155,17 +190,27 @@ class MissionExecutor(private val host: Host, private val telemetry: RackScanTel
         requestStop = true
     }
 
-    private fun runVerticalStep(distanceM: Float, up: Boolean) {
+    private fun runVerticalStep(distanceM: Float, up: Boolean, nextAlignMarkerId: Int) {
         val startAlt = host.currentAltitudeM()
         val targetAlt = if (up) startAlt + distanceM else (startAlt - distanceM).coerceAtLeast(0.30)
         if (up) host.missionStartUp(distanceM) else host.missionStartDown(distanceM)
 
         // POSITION-mode climbs are FC-paced. Poll altitude until we're inside
-        // a 10 cm window of target, or until we time out.
+        // a 10 cm window of target, or until we time out. Like sweeps, also end
+        // early the moment the next target marker comes into view so the
+        // following ALIGN engages it (overlap detection during the climb).
         val deadline = System.currentTimeMillis() + VERTICAL_STEP_TIMEOUT_MS
+        var seenStreak = 0
         while (!requestStop && System.currentTimeMillis() < deadline) {
-            val now = host.currentAltitudeM()
-            if (kotlin.math.abs(now - targetAlt) < 0.10) break
+            if (nextAlignMarkerId >= 0 && host.markerVisible(nextAlignMarkerId)) {
+                if (++seenStreak >= EARLY_DETECT_FRAMES) {
+                    logs.i(TAG, "Next marker $nextAlignMarkerId sighted mid-climb — ending climb early to align")
+                    break
+                }
+            } else {
+                seenStreak = 0
+            }
+            if (kotlin.math.abs(host.currentAltitudeM() - targetAlt) < 0.10) break
             sleepInterruptible(100)
         }
         host.missionStopAndHover()
@@ -203,5 +248,7 @@ class MissionExecutor(private val host: Host, private val telemetry: RackScanTel
         private const val LAND_TIMEOUT_MS          = 20000L
         private const val ALIGN_TIMEOUT_MS         = 20000L
         private const val ALIGN_HOLD_MS            = 1000L   // centered must hold this long
+        private const val SWEEP_POLL_MS            = 50L     // how often a sweep checks for the next marker
+        private const val EARLY_DETECT_FRAMES      = 2       // consecutive sightings before ending a sweep (debounce)
     }
 }
