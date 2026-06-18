@@ -20,13 +20,30 @@ class RackScanTelemetry {
 
     // ── Marker detection (last frame) ──
     @Volatile var detected: Boolean    = false
+    // ID of the marker measured this frame (-1 = none). During ALIGN this is the
+    // align target; in free "measure" mode it's the first marker the detector saw.
+    @Volatile var detectedId: Int      = -1
     @Volatile var offsetX: Float       = 0f
     // Vertical (elevation) offset of the marker in the frame, normalised to
     // [-1,1]; >0 = marker below centre. Written by the Rack-Mission aligner.
     @Volatile var offsetY: Float       = 0f
-    // True when the aligner has the marker centred on BOTH axes (within deadzone).
+    // True when the aligner has the marker centred on all three axes (within deadzone).
     @Volatile var alignCentered: Boolean = false
-    @Volatile var markerSize: Float    = 0f
+    @Volatile var markerSize: Float    = 0f     // apparent size, sqrt(area)/frameWidth
+    // Tracked marker's 4 corner pixel coords in the camera frame as raw JSON
+    // "[[x0,y0],...]" (or "null"). Browser draws the bbox + line overlay from this.
+    @Volatile var markerCornersJson: String = "null"
+    // Metric distance/standoff (Rack-Mission aligner): live estimate + configured targets.
+    @Volatile var distanceM: Float     = 0f     // estimated drone↔marker distance (m)
+    // Metric marker pose in the CAMERA frame, from solvePnP (m). X = right,
+    // Y = down, Z = forward along the optical axis (Z == distanceM). All zero
+    // when pose estimation is unavailable (falls back to the size heuristic).
+    @Volatile var posX: Float          = 0f
+    @Volatile var posY: Float          = 0f
+    @Volatile var posZ: Float          = 0f
+    @Volatile var poseValid: Boolean   = false  // true when distanceM came from solvePnP, not the heuristic
+    @Volatile var arucoSizeM: Float    = 0.10f  // physical marker side length (m) — set from dashboard
+    @Volatile var standoffM: Float     = 1.0f   // target standoff distance (m) — set from dashboard
     @Volatile var visibleIdsCsv: String = ""
 
     // ── Pump output (last tick) ──
@@ -104,10 +121,19 @@ class RackScanTelemetry {
         append("\"isTracking\":").append(isTracking).append(',')
         append("\"isVSEnabled\":").append(isVSEnabled).append(',')
         append("\"detected\":").append(detected).append(',')
+        append("\"detectedId\":").append(detectedId).append(',')
         append("\"offsetX\":").append(offsetX).append(',')
         append("\"offsetY\":").append(offsetY).append(',')
         append("\"alignCentered\":").append(alignCentered).append(',')
         append("\"markerSize\":").append(markerSize).append(',')
+        append("\"markerCorners\":").append(markerCornersJson).append(',')
+        append("\"distanceM\":").append(distanceM).append(',')
+        append("\"posX\":").append(posX).append(',')
+        append("\"posY\":").append(posY).append(',')
+        append("\"posZ\":").append(posZ).append(',')
+        append("\"poseValid\":").append(poseValid).append(',')
+        append("\"arucoSizeM\":").append(arucoSizeM).append(',')
+        append("\"standoffM\":").append(standoffM).append(',')
         append("\"visibleIds\":\"").append(visibleIdsCsv).append("\",")
         append("\"rollPitchControlMode\":\"").append(rollPitchControlMode).append("\",")
         append("\"verticalControlMode\":\"").append(verticalControlMode).append("\",")

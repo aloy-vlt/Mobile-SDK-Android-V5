@@ -829,7 +829,7 @@ class DashboardServerVM(app: Application) : AndroidViewModel(app), DashboardServ
     companion object {
         private const val TAG = "DashboardServerVM"
         const val DEFAULT_PORT = 8080
-        private const val JPEG_QUALITY = 60
+        private const val JPEG_QUALITY = 90
         private const val TELEMETRY_INTERVAL_MS = 200L
         private const val NanoWSD_SOCKET_TIMEOUT_MS = 0
 

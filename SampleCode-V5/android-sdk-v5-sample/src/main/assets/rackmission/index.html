@@ -95,6 +95,16 @@
   .live-badge b{color:var(--danger)} .feedwrap.live .live-badge b{color:var(--ok)}
   .feedmeta{position:absolute; bottom:10px; left:12px; font-family:var(--mono); font-size:11px;
     color:var(--txt-2); background:rgba(5,8,13,.55); padding:3px 9px; border-radius:5px}
+  /* ArUco bbox + line-to-marker overlay; browser-drawn from telemetry corners */
+  .feedwrap .overlay{position:absolute; inset:0; width:100%; height:100%; pointer-events:none}
+  /* ArUco distance HUD (top-right of the feed); lights up when a marker is tracked */
+  .dist-hud{position:absolute; top:10px; right:10px; display:flex; flex-direction:column; align-items:flex-end;
+    gap:2px; padding:6px 12px; border-radius:8px; background:rgba(5,8,13,.66); border:1px solid var(--border-2);
+    font-family:var(--mono); color:var(--txt-3); transition:color .15s, border-color .15s}
+  .dist-hud.on{color:var(--ok); border-color:var(--ok)}
+  .dist-hud .d{font-size:22px; font-weight:700; line-height:1}
+  .dist-hud .d small{font-size:12px; font-weight:500; opacity:.7}
+  .dist-hud .sub{font-size:10px; letter-spacing:.1em; color:var(--txt-3)}
 
   /* ─── Mini drone-centered mission map (overlay, bottom-right of the feed) ─── */
   .minimap{position:absolute; bottom:10px; right:10px; width:204px; height:136px;
@@ -253,11 +263,16 @@
       <div class="feedwrap" id="feedwrap">
         <div class="scan"></div>
         <img id="feed" alt="raw camera feed" />
+        <canvas id="overlay" class="overlay"></canvas>
         <div class="placeholder" id="feedPlaceholder">
           <div class="big">Awaiting Camera</div>
           <div>Connect the aircraft and start the dashboard from the mobile app.</div>
         </div>
         <div class="live-badge"><b>●</b> <span id="liveTxt">NO SIGNAL</span></div>
+        <div class="dist-hud" id="distHud">
+          <div class="d" id="distVal">—<small> m</small></div>
+          <div class="sub" id="distSub">ARUCO DISTANCE</div>
+        </div>
         <div class="feedmeta" id="feedMeta">— fps · —×—</div>
         <canvas id="minimap" class="minimap" title="Mission map · drone-centered"></canvas>
       </div>
@@ -330,7 +345,17 @@
         <input type="range" id="sweepRange" min="0.05" max="1" step="0.05" value="0.3" />
         <span class="sweepval" id="sweepVal">0.30 m/s</span>
       </div>
-      <div class="hintline">ArUco Align re-centers on a marker before the next step — GPS-free indoor positioning that corrects sweep drift. Sweep distance = speed × time (open-loop).</div>
+      <div class="addrow" style="grid-template-columns:1fr 1fr 1fr; margin-top:11px">
+        <div>
+          <label class="fl" for="arucoSizeM">ArUco size (mm)</label>
+          <input type="number" id="arucoSizeM" value="100" min="20" max="2000" step="1" />
+        </div>
+        <div>
+          <label class="fl" for="standoffM">Standoff (m)</label>
+          <input type="number" id="standoffM" value="0.2" min="0.2" max="10" step="0.1" />
+        </div>
+      </div>
+      <div class="hintline">ArUco Align holds the marker centred on all 3 axes. Distance is metric — enter the marker's real side length and the target standoff. GPS-free indoor positioning that also corrects sweep drift.</div>
       <div class="btnrow" style="margin-top:12px; align-items:center">
         <label class="chk"><input type="checkbox" id="loopChk" /> Loop mission</label>
         <span class="spacer" style="flex:1"></span>
@@ -428,15 +453,45 @@ function renderFrame(blob){
     $("feedMeta").textContent=`${fps} fps · ${lastFrameW||"—"}×${lastFrameH||"—"}`; frameCount=0; lastFps=now; }
 }
 
+/* ── ArUco overlay: bbox + line from frame centre to marker (browser-drawn) ── */
+function drawOverlay(){
+  const cv=$("overlay"), wrap=$("feedwrap"); if(!cv||!wrap) return;
+  const W=wrap.clientWidth|0, H=wrap.clientHeight|0;
+  if(cv.width!==W||cv.height!==H){ cv.width=W; cv.height=H; }
+  const ctx=cv.getContext("2d"); ctx.clearRect(0,0,W,H);
+  if(!lastFrameW||!lastFrameH) return;
+  // object-fit:contain mapping from frame pixels → on-screen pixels
+  const s=Math.min(W/lastFrameW,H/lastFrameH), ox=(W-lastFrameW*s)/2, oy=(H-lastFrameH*s)/2;
+  const mx=x=>ox+x*s, my=y=>oy+y*s, fcx=mx(lastFrameW/2), fcy=my(lastFrameH/2);
+  // centre reticle (always)
+  ctx.strokeStyle="rgba(255,255,255,.45)"; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(fcx-8,fcy); ctx.lineTo(fcx+8,fcy); ctx.moveTo(fcx,fcy-8); ctx.lineTo(fcx,fcy+8); ctx.stroke();
+  const c=tel&&tel.markerCorners; if(!c||c.length!==4) return;
+  const col=tel.alignCentered?"#22c55e":"#f59e0b";
+  // bounding box
+  ctx.strokeStyle=col; ctx.lineWidth=2; ctx.beginPath();
+  for(let i=0;i<4;i++){ const x=mx(c[i][0]), y=my(c[i][1]); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }
+  ctx.closePath(); ctx.stroke();
+  // line from frame centre to marker centre + dot
+  let cx=0,cy=0; for(let i=0;i<4;i++){ cx+=c[i][0]; cy+=c[i][1]; } cx/=4; cy/=4;
+  const mcx=mx(cx), mcy=my(cy);
+  ctx.lineWidth=1.5; ctx.beginPath(); ctx.moveTo(fcx,fcy); ctx.lineTo(mcx,mcy); ctx.stroke();
+  ctx.fillStyle=col; ctx.beginPath(); ctx.arc(mcx,mcy,3,0,6.2832); ctx.fill();
+}
+
 /* ── Apply telemetry ── */
 function fmt(n,d){ return (n==null||Number.isNaN(n))?"—":Number(n).toFixed(d); }
 function apply(d){
   tel=d.telemetry||{};
   if(d.frame){ lastFrameW=d.frame.w; lastFrameH=d.frame.h; }
+  drawOverlay();
   if(typeof tel.sweepSpeedMps==="number" && tel.sweepSpeedMps>0 && !sweepDragging){
     sweepSpeed=tel.sweepSpeedMps;
     $("sweepRange").value=sweepSpeed; $("sweepVal").textContent=sweepSpeed.toFixed(2)+" m/s";
   }
+  // reflect drone-side marker-size / standoff in the inputs when not being edited
+  const aSz=$("arucoSizeM"); if(typeof tel.arucoSizeM==="number" && document.activeElement!==aSz && Math.abs((parseFloat(aSz.value)||0)/1000-tel.arucoSizeM)>5e-4) aSz.value=Math.round(tel.arucoSizeM*1000);
+  const aSt=$("standoffM"); if(typeof tel.standoffM==="number" && document.activeElement!==aSt && Math.abs((parseFloat(aSt.value)||0)-tel.standoffM)>1e-3) aSt.value=tel.standoffM;
   // readouts
   $("roAlt").innerHTML=fmt(tel.altitudeM,2)+'<small> m</small>';
   $("roBat").innerHTML=fmt(d.battery,0)+'<small> %</small>';
@@ -457,9 +512,21 @@ function apply(d){
   $("mBar").style.width=(total>0?Math.round(((cur<0?0:cur+ (running?0.5:0))/total)*100):0)+"%";
   if(running && tel.stateName==="ALIGN"){
     const c = tel.detected ? (tel.alignCentered ? "· CENTERED" : "· centering") : "· no marker";
-    $("mElapsed").textContent = `ALIGN #${tel.currentTargetId|0} · x ${fmt(tel.offsetX,2)} · y ${fmt(tel.offsetY,2)} ${c}`;
+    $("mElapsed").textContent = `ALIGN #${tel.currentTargetId|0} · x ${fmt(tel.offsetX,2)} · y ${fmt(tel.offsetY,2)} · ${fmt(tel.distanceM,2)}m/${fmt(tel.standoffM,1)}m ${c}`;
   } else {
     $("mElapsed").textContent = running&&cur>=0 ? `running step ${cur+1}` : "step —";
+  }
+  // ArUco distance HUD on the feed — live whenever the aligner sees the marker.
+  // poseValid distinguishes calibrated solvePnP ("PnP") from the size heuristic ("est").
+  const det=!!tel.detected;
+  $("distHud").className="dist-hud"+(det?" on":"");
+  if(det){
+    $("distVal").innerHTML=fmt(tel.distanceM,2)+'<small> m</small>';
+    const id=(tel.detectedId!=null && tel.detectedId>=0)?`#${tel.detectedId} · `:"";
+    $("distSub").textContent=`${id}${tel.poseValid?"PnP":"est"}`;
+  } else {
+    $("distVal").innerHTML='—<small> m</small>';
+    $("distSub").textContent="ARUCO DISTANCE";
   }
   // button gating
   $("btnEnableVS").disabled=vsOn;
@@ -834,12 +901,15 @@ $("sweepRange").addEventListener("input",()=>{ sweepDragging=true;
   const v=parseFloat($("sweepRange").value); sweepSpeed=v; $("sweepVal").textContent=v.toFixed(2)+" m/s"; });
 $("sweepRange").addEventListener("change",()=>{ sweepDragging=false;
   send("setSweepSpeed",{mps:parseFloat($("sweepRange").value)}); });
+$("arucoSizeM").addEventListener("change",()=>send("setArucoSize",{m:(parseFloat($("arucoSizeM").value)||100)/1000}));
+$("standoffM").addEventListener("change",()=>send("setStandoff",{m:parseFloat($("standoffM").value)||1.0}));
 
 /* ── Save / load mission config (.json export / import) ── */
 const PLAN_ACTIONS=["LEFT","RIGHT","UP","DOWN","HOVER","ALIGN","LAND"];
 function gatherConfig(){
   return { type:"rackmission-plan", version:1,
     sweepSpeed:+sweepSpeed.toFixed(2), loop:$("loopChk").checked,
+    arucoSizeM:(+$("arucoSizeM").value||100)/1000, standoffM:+$("standoffM").value||0.2,
     steps:builder.map(s=>({action:s.action, value:s.value})) };
 }
 function sanitizeStep(o){
@@ -860,6 +930,8 @@ function applyConfig(c){
     $("sweepRange").value=sweepSpeed; $("sweepVal").textContent=sweepSpeed.toFixed(2)+" m/s";
     send("setSweepSpeed",{mps:sweepSpeed});
   }
+  if(typeof c.arucoSizeM==="number"){ $("arucoSizeM").value=Math.round(c.arucoSizeM*1000); send("setArucoSize",{m:c.arucoSizeM}); }
+  if(typeof c.standoffM==="number"){ $("standoffM").value=c.standoffM; send("setStandoff",{m:c.standoffM}); }
   builder=c.steps.map(sanitizeStep).filter(Boolean);
   $("loopChk").checked=!!c.loop;
   renderBuilder();

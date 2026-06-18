@@ -111,10 +111,11 @@ class RackScanMissionVM(app: Application) : AndroidViewModel(app), DashboardServ
             frameData, offset, length, width, height, _ ->
         val srv = server ?: return@CameraFrameListener
         val aligning = flight.isAligning()
-        // Encode for the feed only when someone's watching, but always process
-        // frames while an ALIGN step is running (the centering loop needs them
-        // even if no dashboard is open).
-        if (srv.clientCount() == 0 && !aligning) return@CameraFrameListener
+        // Process frames when someone's watching, while aligning, OR for the whole
+        // mission — the mission needs continuous detection so a sweep can spot the
+        // next target marker early and cut over to aligning it (even with no
+        // dashboard open). Encoding for the feed is still gated on clientCount.
+        if (srv.clientCount() == 0 && !aligning && !missionExecutor.isRunning()) return@CameraFrameListener
         if (!isEncoding.compareAndSet(false, true)) return@CameraFrameListener
 
         val copy = ByteArray(length)
@@ -123,7 +124,11 @@ class RackScanMissionVM(app: Application) : AndroidViewModel(app), DashboardServ
         encoderExec.execute {
             try {
                 frameW = width; frameH = height
-                if (flight.isAligning()) flight.processAlignFrame(copy, width, height)
+                // Always run detection while the dashboard is watching (the outer
+                // guard already ensured a client is connected or we're aligning),
+                // so the live ArUco distance shows even outside an ALIGN step.
+                // The controller only issues flight commands when state == ALIGN.
+                flight.processAlignFrame(copy, width, height)
                 if (srv.clientCount() > 0) {
                     srv.pushJpegFrame(nv21ToJpeg(copy, width, height, JPEG_QUALITY))
                     tickFps()
@@ -201,6 +206,8 @@ class RackScanMissionVM(app: Application) : AndroidViewModel(app), DashboardServ
                     "runMission"  -> runMission(payload)
                     "stopMission" -> missionExecutor.stop()
                     "setSweepSpeed" -> flight.setSweepSpeed(payload.optDouble("mps", 0.3).toFloat())
+                    "setArucoSize"  -> flight.setArucoSize(payload.optDouble("m", 0.1).toFloat())
+                    "setStandoff"   -> flight.setStandoff(payload.optDouble("m", 0.2).toFloat())
                     "startRtsp"   -> startRtsp(payload.optInt("port", RtspStreamingService.DEFAULT_PORT))
                     "stopRtsp"    -> stopRtsp()
                     else -> Log.w(TAG, "unknown cmd: $cmd")
